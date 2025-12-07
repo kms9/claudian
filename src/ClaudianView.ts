@@ -2,6 +2,7 @@ import { ItemView, WorkspaceLeaf, MarkdownRenderer, setIcon, TFile, Modal } from
 import type ClaudianPlugin from './main';
 import { VIEW_TYPE_CLAUDIAN, ChatMessage, StreamChunk, ToolCallInfo, ContentBlock, CLAUDE_MODELS, ClaudeModel, THINKING_BUDGETS, ThinkingBudget, DEFAULT_THINKING_BUDGET, PermissionMode } from './types';
 import type { ApprovalCallback } from './ClaudianService';
+import { getVaultPath } from './utils';
 
 export class ClaudianView extends ItemView {
   private plugin: ClaudianPlugin;
@@ -43,6 +44,10 @@ export class ClaudianView extends ItemView {
   private cachedMarkdownFiles: TFile[] = [];
   private filesCacheDirty = true;
   private cancelRequested = false;
+
+  // Edited files tracking (session-only)
+  private editedFilesThisSession: Set<string> = new Set();
+  private editedFilesIndicatorEl: HTMLElement | null = null;
 
   // Model selector
   private modelSelectorEl: HTMLElement | null = null;
@@ -158,7 +163,10 @@ export class ClaudianView extends ItemView {
     // Input area
     this.inputContainerEl = container.createDiv({ cls: 'claudian-input-container' });
 
-    // File indicator (above textarea)
+    // Edited files indicator (above file indicator - shows non-attached edited files)
+    this.editedFilesIndicatorEl = this.inputContainerEl.createDiv({ cls: 'claudian-edited-files-indicator' });
+
+    // File indicator (above textarea - shows attached files)
     this.fileIndicatorEl = this.inputContainerEl.createDiv({ cls: 'claudian-file-indicator' });
 
     // Input box wrapper (contains textarea + toolbar)
@@ -227,12 +235,24 @@ export class ClaudianView extends ItemView {
     });
 
     // Listen for focus changes - update attachment before session starts
+    // Also dismiss edited file indicator when user focuses on an edited file
     this.registerEvent(
       this.plugin.app.workspace.on('file-open', (file) => {
-        if (!this.sessionStarted && file) {
-          this.attachedFiles.clear();
-          this.attachedFiles.add(file.path);
-          this.updateFileIndicator();
+        if (file) {
+          const normalizedPath = this.normalizePathForVault(file.path);
+          if (!normalizedPath) return;
+
+          // Dismiss edited indicator when file is focused
+          if (this.isFileEdited(normalizedPath)) {
+            this.dismissEditedFile(normalizedPath);
+          }
+
+          // Update attachment before session starts
+          if (!this.sessionStarted) {
+            this.attachedFiles.clear();
+            this.attachedFiles.add(normalizedPath);
+            this.updateFileIndicator();
+          }
         }
       })
     );
@@ -411,47 +431,55 @@ export class ClaudianView extends ItemView {
         await this.appendText(chunk.content);
         break;
 
-      case 'tool_use':
-        if (this.plugin.settings.showToolUse) {
-          // Finalize current blocks before adding tool
-          if (this.currentThinkingEl) {
-            this.finalizeCurrentThinkingBlock(msg);
-          }
-          // Finalize current text block before adding tool
-          this.finalizeCurrentTextBlock(msg);
+      case 'tool_use': {
+        // Finalize current blocks before adding tool
+        if (this.currentThinkingEl) {
+          this.finalizeCurrentThinkingBlock(msg);
+        }
+        // Finalize current text block before adding tool
+        this.finalizeCurrentTextBlock(msg);
 
-          // Add tool_use reference to contentBlocks
+        const toolCall: ToolCallInfo = {
+          id: chunk.id,
+          name: chunk.name,
+          input: chunk.input,
+          status: 'running',
+          isExpanded: false,
+        };
+        msg.toolCalls = msg.toolCalls || [];
+        msg.toolCalls.push(toolCall);
+
+        if (this.plugin.settings.showToolUse) {
+          // Add tool_use reference to contentBlocks when UI is shown
           msg.contentBlocks = msg.contentBlocks || [];
           msg.contentBlocks.push({ type: 'tool_use', toolId: chunk.id });
-
-          const toolCall: ToolCallInfo = {
-            id: chunk.id,
-            name: chunk.name,
-            input: chunk.input,
-            status: 'running',
-            isExpanded: false,
-          };
-          msg.toolCalls = msg.toolCalls || [];
-          msg.toolCalls.push(toolCall);
           this.renderToolCall(this.currentContentEl!, toolCall);
         }
         break;
+      }
 
-      case 'tool_result':
-        if (this.plugin.settings.showToolUse) {
-          const toolCall = msg.toolCalls?.find(tc => tc.id === chunk.id);
-          if (toolCall) {
-            const isBlocked = this.isBlockedToolResult(chunk.content, chunk.isError);
-            toolCall.status = isBlocked ? 'blocked' : (chunk.isError ? 'error' : 'completed');
-            toolCall.result = chunk.content;
-            this.updateToolCallResult(chunk.id, toolCall);
+      case 'tool_result': {
+        const existingToolCall = msg.toolCalls?.find(tc => tc.id === chunk.id);
+        const isBlocked = this.isBlockedToolResult(chunk.content, chunk.isError);
+
+        if (existingToolCall) {
+          existingToolCall.status = isBlocked ? 'blocked' : (chunk.isError ? 'error' : 'completed');
+          existingToolCall.result = chunk.content;
+
+          if (this.plugin.settings.showToolUse) {
+            this.updateToolCallResult(chunk.id, existingToolCall);
           }
         }
+
+        // Track edited files for Write/Edit tools even when tool UI is hidden
+        this.trackEditedFile(existingToolCall?.name, existingToolCall?.input || {}, chunk.isError || isBlocked);
+
         // Show thinking indicator again - Claude is processing the tool result
         if (this.currentContentEl) {
           this.showThinkingIndicator(this.currentContentEl);
         }
         break;
+      }
 
       case 'blocked':
         await this.appendText(`\n\n⚠️ **Blocked:** ${chunk.content}`);
@@ -798,11 +826,15 @@ export class ClaudianView extends ItemView {
     this.sessionStarted = false;
     this.lastSentFiles.clear();
     this.attachedFiles.clear();
+    this.clearEditedFiles();
 
     // Auto-attach currently focused file for new sessions
     const activeFile = this.plugin.app.workspace.getActiveFile();
     if (activeFile) {
-      this.attachedFiles.add(activeFile.path);
+      const normalizedPath = this.normalizePathForVault(activeFile.path);
+      if (normalizedPath) {
+        this.attachedFiles.add(normalizedPath);
+      }
     }
     this.updateFileIndicator();
   }
@@ -820,6 +852,7 @@ export class ClaudianView extends ItemView {
 
     this.currentConversationId = conversation.id;
     this.messages = [...conversation.messages];
+    this.clearEditedFiles();
 
     // Restore session ID
     this.plugin.agentService.setSessionId(conversation.sessionId);
@@ -833,7 +866,10 @@ export class ClaudianView extends ItemView {
       this.sessionStarted = false;
       const activeFile = this.plugin.app.workspace.getActiveFile();
       if (activeFile) {
-        this.attachedFiles.add(activeFile.path);
+        const normalizedPath = this.normalizePathForVault(activeFile.path);
+        if (normalizedPath) {
+          this.attachedFiles.add(normalizedPath);
+        }
       }
     } else {
       // Existing session with messages - session already started
@@ -864,6 +900,7 @@ export class ClaudianView extends ItemView {
 
     this.currentConversationId = conversation.id;
     this.messages = [...conversation.messages];
+    this.clearEditedFiles();
 
     // Reset file context state for switched conversation
     this.lastSentFiles.clear();
@@ -1203,6 +1240,29 @@ export class ClaudianView extends ItemView {
     return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
   }
 
+  /**
+   * Normalize a file path to be vault-relative with forward slashes
+   */
+  private normalizePathForVault(rawPath: string | undefined | null): string | null {
+    if (!rawPath) return null;
+
+    // Normalize separators first
+    const unixPath = rawPath.replace(/\\/g, '/');
+    const vaultPath = getVaultPath(this.plugin.app);
+
+    if (vaultPath) {
+      const normalizedVault = vaultPath.replace(/\\/g, '/').replace(/\/+$/, '');
+      if (unixPath.startsWith(normalizedVault)) {
+        const relative = unixPath.slice(normalizedVault.length).replace(/^\/+/, '');
+        if (relative) {
+          return relative;
+        }
+      }
+    }
+
+    return unixPath.replace(/^\/+/, '');
+  }
+
   // ============================================
   // File Context Methods
   // ============================================
@@ -1228,6 +1288,7 @@ export class ClaudianView extends ItemView {
 
     if (this.attachedFiles.size === 0) {
       this.fileIndicatorEl.style.display = 'none';
+      this.updateEditedFilesIndicator();
       return;
     }
 
@@ -1239,6 +1300,9 @@ export class ClaudianView extends ItemView {
         this.updateFileIndicator();
       });
     }
+
+    // Keep edited files indicator in sync with attachment changes
+    this.updateEditedFilesIndicator();
   }
 
   /**
@@ -1248,6 +1312,11 @@ export class ClaudianView extends ItemView {
     if (!this.fileIndicatorEl) return;
 
     const chipEl = this.fileIndicatorEl.createDiv({ cls: 'claudian-file-chip' });
+
+    // Add edited class if file was edited this session
+    if (this.isFileEdited(path)) {
+      chipEl.addClass('claudian-file-chip-edited');
+    }
 
     const iconEl = chipEl.createSpan({ cls: 'claudian-file-chip-icon' });
     setIcon(iconEl, 'file-text');
@@ -1262,9 +1331,146 @@ export class ClaudianView extends ItemView {
     removeEl.setText('\u00D7'); // × symbol
     removeEl.setAttribute('aria-label', 'Remove');
 
+    // Click chip to open file (but not remove button)
+    chipEl.addEventListener('click', async (e) => {
+      if ((e.target as HTMLElement).closest('.claudian-file-chip-remove')) return;
+      await this.openFileFromChip(path);
+    });
+
     removeEl.addEventListener('click', (e) => {
       e.stopPropagation();
       onRemove();
+    });
+  }
+
+  // ============================================
+  // Edited Files Methods
+  // ============================================
+
+  /**
+   * Track a file as edited when Write/Edit tool completes successfully
+   */
+  private trackEditedFile(toolName: string | undefined, toolInput: Record<string, unknown> | undefined, isError: boolean) {
+    // Only track Write, Edit, NotebookEdit tools
+    if (!toolName || !['Write', 'Edit', 'NotebookEdit'].includes(toolName)) return;
+
+    // Don't track if there was an error
+    if (isError) return;
+
+    // Extract file path from tool input
+    const rawPath = (toolInput?.file_path as string) || (toolInput?.notebook_path as string);
+    const filePath = this.normalizePathForVault(rawPath);
+    if (!filePath) return;
+
+    this.editedFilesThisSession.add(filePath);
+    this.updateEditedFilesIndicator();
+    // Re-render attachment chips to show edited border if file is attached
+    this.updateFileIndicator();
+  }
+
+  /**
+   * Clear all tracked edited files (called on new session)
+   */
+  private clearEditedFiles() {
+    this.editedFilesThisSession.clear();
+    this.updateEditedFilesIndicator();
+    this.updateFileIndicator();
+  }
+
+  /**
+   * Dismiss a single edited file (called when file is focused)
+   * Removes the border indicator and removes from "Edited:" section if not attached
+   */
+  private dismissEditedFile(path: string) {
+    const normalizedPath = this.normalizePathForVault(path);
+    if (normalizedPath && this.editedFilesThisSession.has(normalizedPath)) {
+      this.editedFilesThisSession.delete(normalizedPath);
+      this.updateEditedFilesIndicator();
+      this.updateFileIndicator();
+    }
+  }
+
+  /**
+   * Check if a file was edited this session
+   */
+  private isFileEdited(path: string): boolean {
+    const normalizedPath = this.normalizePathForVault(path);
+    if (!normalizedPath) return false;
+    return this.editedFilesThisSession.has(normalizedPath);
+  }
+
+  /**
+   * Get edited files that are NOT in the attached files list
+   */
+  private getNonAttachedEditedFiles(): string[] {
+    return [...this.editedFilesThisSession].filter(path => !this.attachedFiles.has(path));
+  }
+
+  /**
+   * Check if the edited files section should be shown
+   */
+  private shouldShowEditedFilesSection(): boolean {
+    return this.getNonAttachedEditedFiles().length > 0;
+  }
+
+  /**
+   * Open a file from a chip click
+   */
+  private async openFileFromChip(path: string) {
+    const normalizedPath = this.normalizePathForVault(path);
+    if (!normalizedPath) return;
+
+    const file = this.app.vault.getAbstractFileByPath(normalizedPath);
+    if (file instanceof TFile) {
+      await this.app.workspace.getLeaf('tab').openFile(file);
+    }
+  }
+
+  /**
+   * Update the edited files indicator UI
+   */
+  private updateEditedFilesIndicator() {
+    if (!this.editedFilesIndicatorEl) return;
+
+    this.editedFilesIndicatorEl.empty();
+
+    if (!this.shouldShowEditedFilesSection()) {
+      this.editedFilesIndicatorEl.style.display = 'none';
+      return;
+    }
+
+    this.editedFilesIndicatorEl.style.display = 'flex';
+
+    // Add label
+    const label = this.editedFilesIndicatorEl.createSpan({ cls: 'claudian-edited-label' });
+    label.setText('Edited:');
+
+    // Render chips for non-attached edited files
+    for (const path of this.getNonAttachedEditedFiles()) {
+      this.renderEditedFileChip(path);
+    }
+  }
+
+  /**
+   * Render an edited file chip (clickable, no remove button)
+   */
+  private renderEditedFileChip(path: string) {
+    if (!this.editedFilesIndicatorEl) return;
+
+    const chipEl = this.editedFilesIndicatorEl.createDiv({ cls: 'claudian-file-chip claudian-file-chip-edited' });
+
+    const iconEl = chipEl.createSpan({ cls: 'claudian-file-chip-icon' });
+    setIcon(iconEl, 'file-text');
+
+    // Extract filename from path
+    const filename = path.split('/').pop() || path;
+    const nameEl = chipEl.createSpan({ cls: 'claudian-file-chip-name' });
+    nameEl.setText(filename);
+    nameEl.setAttribute('title', path);
+
+    // Click to open
+    chipEl.addEventListener('click', async () => {
+      await this.openFileFromChip(path);
     });
   }
 
@@ -1427,14 +1633,19 @@ export class ClaudianView extends ItemView {
     if (!selectedFile) return;
 
     // Add to attached files
-    this.attachedFiles.add(selectedFile.path);
+    const normalizedPath = this.normalizePathForVault(selectedFile.path);
+    if (normalizedPath) {
+      this.attachedFiles.add(normalizedPath);
+    }
 
-    // Remove @search text from input
+    // Replace @search text with @filename in input
     const text = this.inputEl.value;
     const beforeAt = text.substring(0, this.mentionStartIndex);
     const afterCursor = text.substring(this.inputEl.selectionStart || 0);
-    this.inputEl.value = beforeAt + afterCursor;
-    this.inputEl.selectionStart = this.inputEl.selectionEnd = beforeAt.length;
+    const filename = selectedFile.name;
+    const replacement = `@${filename} `;
+    this.inputEl.value = beforeAt + replacement + afterCursor;
+    this.inputEl.selectionStart = this.inputEl.selectionEnd = beforeAt.length + replacement.length;
 
     this.hideMentionDropdown();
     this.updateFileIndicator();

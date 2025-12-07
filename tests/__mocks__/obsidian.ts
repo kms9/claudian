@@ -136,3 +136,18 @@ export const MarkdownRenderer = {
 };
 
 export const setIcon = jest.fn();
+
+// TFile class for instanceof checks
+export class TFile {
+  path: string;
+  name: string;
+  basename: string;
+  extension: string;
+
+  constructor(path: string = '') {
+    this.path = path;
+    this.name = path.split('/').pop() || '';
+    this.basename = this.name.replace(/\.[^.]+$/, '');
+    this.extension = this.name.split('.').pop() || '';
+  }
+}

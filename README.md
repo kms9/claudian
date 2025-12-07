@@ -19,6 +19,7 @@ An Obsidian plugin that embeds Claude Agent as a sidebar chat interface. Your va
 - **Safety blocklist**: Block dangerous commands even in Yolo mode
 - **Vault confinement**: All tools (including Bash paths) are restricted to the vault with symlink-safe checks
 - **Cancel streaming**: Press Escape to stop a response mid-stream
+- **Edited files indicator**: Border highlight on attached edited files, separate “Edited:” chips for non-attached edits, auto-dismiss on focus, and click-to-open tabs (session-scoped)
 
 ## Requirements
 
@@ -126,7 +127,7 @@ src/
 - [x] Model selection (Haiku, Sonnet, Opus)
 - [x] Thinking token budget adjustment (Off/Low/Medium/High)
 - [x] Permission modes (Yolo/Safe)
-- [ ] Open files that Claude edits
+- [x] Edited files indicator for Claude edits (border on attachments, “Edited:” chips, click-to-open, auto-dismiss)
 - [ ] Chat history export
 
 ## License
