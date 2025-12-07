@@ -431,6 +431,31 @@ describe('ClaudeAgentService', () => {
     it('should reset session without throwing', () => {
       expect(() => service.resetSession()).not.toThrow();
     });
+
+    it('should clear session ID', () => {
+      service.setSessionId('some-session');
+      expect(service.getSessionId()).toBe('some-session');
+
+      service.resetSession();
+      expect(service.getSessionId()).toBeNull();
+    });
+  });
+
+  describe('getSessionId and setSessionId', () => {
+    it('should initially return null', () => {
+      expect(service.getSessionId()).toBeNull();
+    });
+
+    it('should set and get session ID', () => {
+      service.setSessionId('test-session-123');
+      expect(service.getSessionId()).toBe('test-session-123');
+    });
+
+    it('should allow setting session ID to null', () => {
+      service.setSessionId('some-session');
+      service.setSessionId(null);
+      expect(service.getSessionId()).toBeNull();
+    });
   });
 
   describe('cleanup', () => {
@@ -514,6 +539,84 @@ describe('ClaudeAgentService', () => {
 
       const blockedChunk = chunks.find((c) => c.type === 'blocked');
       expect(blockedChunk).toBeDefined();
+    });
+  });
+
+  describe('query with conversation history', () => {
+    beforeEach(() => {
+      (fs.existsSync as jest.Mock).mockReturnValue(true);
+    });
+
+    it('should accept optional conversation history parameter', async () => {
+      setMockMessages([
+        { type: 'system', subtype: 'init', session_id: 'test-session' },
+        { type: 'assistant', message: { content: [{ type: 'text', text: 'Hello!' }] } },
+        { type: 'result' },
+      ]);
+
+      const history = [
+        { id: 'msg-1', role: 'user' as const, content: 'Previous message', timestamp: Date.now() },
+        { id: 'msg-2', role: 'assistant' as const, content: 'Previous response', timestamp: Date.now() },
+      ];
+
+      const chunks: any[] = [];
+      for await (const chunk of service.query('new message', history)) {
+        chunks.push(chunk);
+      }
+
+      expect(chunks.some((c) => c.type === 'text')).toBe(true);
+    });
+
+    it('should work without conversation history', async () => {
+      setMockMessages([
+        { type: 'system', subtype: 'init', session_id: 'test-session' },
+        { type: 'assistant', message: { content: [{ type: 'text', text: 'Hello!' }] } },
+        { type: 'result' },
+      ]);
+
+      const chunks: any[] = [];
+      for await (const chunk of service.query('hello')) {
+        chunks.push(chunk);
+      }
+
+      expect(chunks.some((c) => c.type === 'text')).toBe(true);
+    });
+  });
+
+  describe('session restoration', () => {
+    it('should use restored session ID on subsequent queries', async () => {
+      (fs.existsSync as jest.Mock).mockReturnValue(true);
+
+      // Simulate restoring a session ID from storage
+      service.setSessionId('restored-session-id');
+
+      setMockMessages([
+        { type: 'assistant', message: { content: [{ type: 'text', text: 'Resumed!' }] } },
+        { type: 'result' },
+      ]);
+
+      for await (const _ of service.query('continue')) {
+        // drain
+      }
+
+      const options = getLastOptions();
+      expect(options?.resume).toBe('restored-session-id');
+    });
+
+    it('should capture new session ID from SDK', async () => {
+      (fs.existsSync as jest.Mock).mockReturnValue(true);
+
+      setMockMessages([
+        { type: 'system', subtype: 'init', session_id: 'new-captured-session' },
+        { type: 'assistant', message: { content: [{ type: 'text', text: 'Hello' }] } },
+        { type: 'result' },
+      ]);
+
+      for await (const _ of service.query('hello')) {
+        // drain
+      }
+
+      expect(service.getSessionId()).toBe('new-captured-session');
     });
   });
 });

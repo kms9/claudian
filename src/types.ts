@@ -6,6 +6,7 @@ export interface ClaudeAgentSettings {
   enableBlocklist: boolean;
   blockedCommands: string[];
   showToolUse: boolean;
+  maxConversations: number;
 }
 
 export const DEFAULT_SETTINGS: ClaudeAgentSettings = {
@@ -20,7 +21,32 @@ export const DEFAULT_SETTINGS: ClaudeAgentSettings = {
     '> /dev/sd',
   ],
   showToolUse: true,
+  maxConversations: 50,
 };
+
+// Conversation persistence types
+export interface Conversation {
+  id: string;
+  title: string;
+  createdAt: number;
+  updatedAt: number;
+  sessionId: string | null;
+  messages: ChatMessage[];
+}
+
+export interface ConversationMeta {
+  id: string;
+  title: string;
+  createdAt: number;
+  updatedAt: number;
+  messageCount: number;
+  preview: string;
+}
+
+// Content block for tracking order of text and tool calls
+export type ContentBlock =
+  | { type: 'text'; content: string }
+  | { type: 'tool_use'; toolId: string };
 
 // Message types for the chat UI
 export interface ChatMessage {
@@ -29,6 +55,8 @@ export interface ChatMessage {
   content: string;
   timestamp: number;
   toolCalls?: ToolCallInfo[];
+  // Ordered content blocks to preserve streaming order
+  contentBlocks?: ContentBlock[];
 }
 
 // Enhanced tool call tracking with status and result

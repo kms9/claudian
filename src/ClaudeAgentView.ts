@@ -1,6 +1,6 @@
 import { ItemView, WorkspaceLeaf, MarkdownRenderer, setIcon } from 'obsidian';
 import type ClaudeAgentPlugin from './main';
-import { VIEW_TYPE_CLAUDE_AGENT, ChatMessage, StreamChunk, ToolCallInfo } from './types';
+import { VIEW_TYPE_CLAUDE_AGENT, ChatMessage, StreamChunk, ToolCallInfo, ContentBlock } from './types';
 
 export class ClaudeAgentView extends ItemView {
   private plugin: ClaudeAgentPlugin;
@@ -17,8 +17,11 @@ export class ClaudeAgentView extends ItemView {
 
   // Thinking indicator
   private thinkingEl: HTMLElement | null = null;
-  private thinkingInterval: ReturnType<typeof setInterval> | null = null;
   private hasReceivedContent = false;
+
+  // Conversation history UI
+  private currentConversationId: string | null = null;
+  private historyDropdown: HTMLElement | null = null;
 
   private static readonly FLAVOR_TEXTS = [
     'Thinking...',
@@ -62,10 +65,8 @@ export class ClaudeAgentView extends ItemView {
     // Header
     const header = container.createDiv({ cls: 'claude-agent-header' });
 
-    // Title container with icon
+    // Left side: Logo + Title
     const titleContainer = header.createDiv({ cls: 'claude-agent-title' });
-
-    // Claude logo SVG
     const logoEl = titleContainer.createSpan({ cls: 'claude-agent-logo' });
     logoEl.innerHTML = `<svg viewBox="0 0 100 100" width="16" height="16">
       <g fill="#D97757">
@@ -80,13 +81,38 @@ export class ClaudeAgentView extends ItemView {
         }).join('')}
       </g>
     </svg>`;
-
     titleContainer.createEl('h4', { text: 'Claude Agent' });
 
-    const clearBtn = header.createEl('button', { cls: 'claude-agent-clear-btn' });
-    setIcon(clearBtn, 'refresh-cw');
-    clearBtn.setAttribute('aria-label', 'New conversation');
-    clearBtn.addEventListener('click', () => this.clearConversation());
+    // Right side: Header actions
+    const headerActions = header.createDiv({ cls: 'claude-agent-header-actions' });
+
+    // History dropdown container
+    const historyContainer = headerActions.createDiv({ cls: 'claude-agent-history-container' });
+
+    // Dropdown trigger (icon button)
+    const trigger = historyContainer.createDiv({ cls: 'claude-agent-header-btn' });
+    setIcon(trigger, 'history');
+    trigger.setAttribute('aria-label', 'Chat history');
+
+    // Dropdown menu
+    this.historyDropdown = historyContainer.createDiv({ cls: 'claude-agent-history-menu' });
+
+    // Toggle dropdown on trigger click
+    trigger.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this.toggleHistoryDropdown();
+    });
+
+    // Close dropdown when clicking outside
+    this.registerDomEvent(document, 'click', () => {
+      this.historyDropdown?.removeClass('visible');
+    });
+
+    // New conversation button
+    const newBtn = headerActions.createDiv({ cls: 'claude-agent-header-btn' });
+    setIcon(newBtn, 'plus');
+    newBtn.setAttribute('aria-label', 'New conversation');
+    newBtn.addEventListener('click', () => this.createNewConversation());
 
     // Messages area
     this.messagesEl = container.createDiv({ cls: 'claude-agent-messages' });
@@ -110,10 +136,13 @@ export class ClaudeAgentView extends ItemView {
       }
     });
 
+    // Load active conversation or create new
+    await this.loadActiveConversation();
   }
 
   async onClose() {
-    // Cleanup if needed
+    // Save current conversation before closing
+    await this.saveCurrentConversation();
   }
 
   private async sendMessage() {
@@ -124,12 +153,19 @@ export class ClaudeAgentView extends ItemView {
     this.isStreaming = true;
 
     // Add user message
-    this.addMessage({
+    const userMsg: ChatMessage = {
       id: this.generateId(),
       role: 'user',
       content,
       timestamp: Date.now(),
-    });
+    };
+    this.addMessage(userMsg);
+
+    // Auto-generate title from first user message
+    if (this.messages.length === 1 && this.currentConversationId) {
+      const title = this.generateTitle(content);
+      await this.plugin.renameConversation(this.currentConversationId, title);
+    }
 
     // Create assistant message placeholder
     const assistantMsg: ChatMessage = {
@@ -138,6 +174,7 @@ export class ClaudeAgentView extends ItemView {
       content: '',
       timestamp: Date.now(),
       toolCalls: [],
+      contentBlocks: [],
     };
     const msgEl = this.addMessage(assistantMsg);
     const contentEl = msgEl.querySelector('.claude-agent-message-content') as HTMLElement;
@@ -153,7 +190,8 @@ export class ClaudeAgentView extends ItemView {
     this.showThinkingIndicator(contentEl);
 
     try {
-      for await (const chunk of this.plugin.agentService.query(content)) {
+      // Pass conversation history for session expiration recovery
+      for await (const chunk of this.plugin.agentService.query(content, this.messages)) {
         await this.handleStreamChunk(chunk, assistantMsg);
       }
     } catch (error) {
@@ -163,34 +201,24 @@ export class ClaudeAgentView extends ItemView {
       this.hideThinkingIndicator();
       this.isStreaming = false;
       this.currentContentEl = null;
-      this.currentTextEl = null;
-      this.currentTextContent = '';
+
+      // Finalize any remaining text block
+      this.finalizeCurrentTextBlock(assistantMsg);
+
+      // Auto-save after message completion
+      await this.saveCurrentConversation();
     }
   }
 
   private showThinkingIndicator(parentEl: HTMLElement) {
     this.thinkingEl = parentEl.createDiv({ cls: 'claude-agent-thinking' });
-    this.updateThinkingText();
-
-    // Rotate flavor text every 2-4 seconds
-    this.thinkingInterval = setInterval(() => {
-      this.updateThinkingText();
-    }, 2000 + Math.random() * 2000);
-  }
-
-  private updateThinkingText() {
-    if (this.thinkingEl) {
-      const texts = ClaudeAgentView.FLAVOR_TEXTS;
-      const randomText = texts[Math.floor(Math.random() * texts.length)];
-      this.thinkingEl.setText(randomText);
-    }
+    // Display one random flavor text
+    const texts = ClaudeAgentView.FLAVOR_TEXTS;
+    const randomText = texts[Math.floor(Math.random() * texts.length)];
+    this.thinkingEl.setText(randomText);
   }
 
   private hideThinkingIndicator() {
-    if (this.thinkingInterval) {
-      clearInterval(this.thinkingInterval);
-      this.thinkingInterval = null;
-    }
     if (this.thinkingEl) {
       this.thinkingEl.remove();
       this.thinkingEl = null;
@@ -216,7 +244,11 @@ export class ClaudeAgentView extends ItemView {
       case 'tool_use':
         if (this.plugin.settings.showToolUse) {
           // Finalize current text block before adding tool
-          this.finalizeCurrentTextBlock();
+          this.finalizeCurrentTextBlock(msg);
+
+          // Add tool_use reference to contentBlocks
+          msg.contentBlocks = msg.contentBlocks || [];
+          msg.contentBlocks.push({ type: 'tool_use', toolId: chunk.id });
 
           const toolCall: ToolCallInfo = {
             id: chunk.id,
@@ -271,7 +303,12 @@ export class ClaudeAgentView extends ItemView {
     await this.renderContent(this.currentTextEl, this.currentTextContent);
   }
 
-  private finalizeCurrentTextBlock() {
+  private finalizeCurrentTextBlock(msg?: ChatMessage) {
+    // Save current text block to contentBlocks if there's content
+    if (msg && this.currentTextContent) {
+      msg.contentBlocks = msg.contentBlocks || [];
+      msg.contentBlocks.push({ type: 'text', content: this.currentTextContent });
+    }
     // Start fresh text block after tool call
     this.currentTextEl = null;
     this.currentTextContent = '';
@@ -462,12 +499,352 @@ export class ClaudeAgentView extends ItemView {
     return result;
   }
 
-  private clearConversation() {
+  /**
+   * Create a new conversation
+   */
+  private async createNewConversation() {
+    if (this.isStreaming) {
+      return; // Don't switch while streaming
+    }
+
+    // Save current conversation first (if has messages)
+    if (this.messages.length > 0) {
+      await this.saveCurrentConversation();
+    }
+
+    // Create new conversation
+    const conversation = await this.plugin.createConversation();
+
+    this.currentConversationId = conversation.id;
     this.messages = [];
     this.messagesEl.empty();
-    // Reset the Claude session so next message starts fresh
-    this.plugin.agentService.resetSession();
-    this.addSystemMessage('Conversation cleared. Ready for new messages.');
+  }
+
+  /**
+   * Load the active conversation on view open
+   */
+  private async loadActiveConversation() {
+    let conversation = this.plugin.getActiveConversation();
+
+    if (!conversation) {
+      conversation = await this.plugin.createConversation();
+    }
+
+    this.currentConversationId = conversation.id;
+    this.messages = [...conversation.messages];
+
+    // Restore session ID
+    this.plugin.agentService.setSessionId(conversation.sessionId);
+
+    // Render all stored messages
+    this.renderMessages();
+  }
+
+  /**
+   * Switch to a different conversation
+   */
+  private async onConversationSelect(id: string) {
+    if (id === this.currentConversationId) return;
+    if (this.isStreaming) {
+      return; // Don't switch while streaming
+    }
+
+    // Save current conversation first
+    await this.saveCurrentConversation();
+
+    // Switch to selected conversation
+    const conversation = await this.plugin.switchConversation(id);
+    if (!conversation) return;
+
+    this.currentConversationId = conversation.id;
+    this.messages = [...conversation.messages];
+
+    // Render messages
+    this.renderMessages();
+
+    // Close dropdown
+    this.historyDropdown?.removeClass('visible');
+  }
+
+  /**
+   * Save current conversation state
+   */
+  private async saveCurrentConversation() {
+    if (!this.currentConversationId) return;
+
+    const sessionId = this.plugin.agentService.getSessionId();
+    await this.plugin.updateConversation(this.currentConversationId, {
+      messages: this.messages,
+      sessionId: sessionId,
+    });
+  }
+
+  /**
+   * Render all messages for a loaded conversation
+   */
+  private renderMessages() {
+    this.messagesEl.empty();
+
+    for (const msg of this.messages) {
+      if (msg.role === 'system') {
+        this.addSystemMessage(msg.content);
+      } else {
+        this.renderStoredMessage(msg);
+      }
+    }
+
+    this.messagesEl.scrollTop = this.messagesEl.scrollHeight;
+  }
+
+  /**
+   * Render a stored message (non-streaming)
+   */
+  private renderStoredMessage(msg: ChatMessage) {
+    const msgEl = this.messagesEl.createDiv({
+      cls: `claude-agent-message claude-agent-message-${msg.role}`,
+    });
+
+    const contentEl = msgEl.createDiv({ cls: 'claude-agent-message-content' });
+
+    if (msg.role === 'user') {
+      const textEl = contentEl.createDiv({ cls: 'claude-agent-text-block' });
+      this.renderContent(textEl, msg.content);
+    } else if (msg.role === 'assistant') {
+      // Use contentBlocks for proper ordering if available
+      if (msg.contentBlocks && msg.contentBlocks.length > 0) {
+        for (const block of msg.contentBlocks) {
+          if (block.type === 'text') {
+            const textEl = contentEl.createDiv({ cls: 'claude-agent-text-block' });
+            this.renderContent(textEl, block.content);
+          } else if (block.type === 'tool_use' && this.plugin.settings.showToolUse) {
+            const toolCall = msg.toolCalls?.find(tc => tc.id === block.toolId);
+            if (toolCall) {
+              this.renderStoredToolCall(contentEl, toolCall);
+            }
+          }
+        }
+      } else {
+        // Fallback for old conversations without contentBlocks
+        if (msg.content) {
+          const textEl = contentEl.createDiv({ cls: 'claude-agent-text-block' });
+          this.renderContent(textEl, msg.content);
+        }
+        if (msg.toolCalls && this.plugin.settings.showToolUse) {
+          for (const toolCall of msg.toolCalls) {
+            this.renderStoredToolCall(contentEl, toolCall);
+          }
+        }
+      }
+    }
+  }
+
+  /**
+   * Render a stored tool call (completed state)
+   */
+  private renderStoredToolCall(parentEl: HTMLElement, toolCall: ToolCallInfo) {
+    const toolEl = parentEl.createDiv({ cls: 'claude-agent-tool-call' });
+
+    // Header
+    const header = toolEl.createDiv({ cls: 'claude-agent-tool-header' });
+
+    // Chevron icon
+    const chevron = header.createSpan({ cls: 'claude-agent-tool-chevron' });
+    setIcon(chevron, 'chevron-right');
+
+    // Tool icon
+    const iconEl = header.createSpan({ cls: 'claude-agent-tool-icon' });
+    this.setToolIcon(iconEl, toolCall.name);
+
+    // Tool label
+    const labelEl = header.createSpan({ cls: 'claude-agent-tool-label' });
+    labelEl.setText(this.getToolLabel(toolCall.name, toolCall.input));
+
+    // Status indicator (already completed)
+    const statusEl = header.createSpan({ cls: 'claude-agent-tool-status' });
+    statusEl.addClass(`status-${toolCall.status}`);
+    if (toolCall.status === 'completed') {
+      setIcon(statusEl, 'check');
+    } else if (toolCall.status === 'error') {
+      setIcon(statusEl, 'x');
+    }
+
+    // Collapsible content
+    const content = toolEl.createDiv({ cls: 'claude-agent-tool-content' });
+    content.style.display = 'none';
+
+    // Input parameters
+    const inputSection = content.createDiv({ cls: 'claude-agent-tool-input' });
+    inputSection.createDiv({ cls: 'claude-agent-tool-section-label', text: 'Input' });
+    const inputCode = inputSection.createEl('pre', { cls: 'claude-agent-tool-code' });
+    inputCode.setText(this.formatToolInput(toolCall.name, toolCall.input));
+
+    // Result
+    const resultSection = content.createDiv({ cls: 'claude-agent-tool-result' });
+    resultSection.createDiv({ cls: 'claude-agent-tool-section-label', text: 'Result' });
+    const resultCode = resultSection.createEl('pre', { cls: 'claude-agent-tool-code' });
+    resultCode.setText(toolCall.result ? this.truncateResult(toolCall.result) : 'No result');
+
+    // Toggle expand/collapse on header click
+    let isExpanded = false;
+    header.addEventListener('click', () => {
+      isExpanded = !isExpanded;
+      if (isExpanded) {
+        content.style.display = 'block';
+        toolEl.addClass('expanded');
+        setIcon(chevron, 'chevron-down');
+      } else {
+        content.style.display = 'none';
+        toolEl.removeClass('expanded');
+        setIcon(chevron, 'chevron-right');
+      }
+    });
+  }
+
+  /**
+   * Toggle history dropdown visibility
+   */
+  private toggleHistoryDropdown() {
+    if (!this.historyDropdown) return;
+
+    const isVisible = this.historyDropdown.hasClass('visible');
+    if (isVisible) {
+      this.historyDropdown.removeClass('visible');
+    } else {
+      this.updateHistoryDropdown();
+      this.historyDropdown.addClass('visible');
+    }
+  }
+
+  /**
+   * Update history dropdown content
+   */
+  private updateHistoryDropdown() {
+    if (!this.historyDropdown) return;
+
+    this.historyDropdown.empty();
+
+    // Header
+    const dropdownHeader = this.historyDropdown.createDiv({ cls: 'claude-agent-history-header' });
+    dropdownHeader.createSpan({ text: 'Conversations' });
+
+    // Conversation list (exclude current session)
+    const list = this.historyDropdown.createDiv({ cls: 'claude-agent-history-list' });
+    const conversations = this.plugin.getConversationList()
+      .filter(conv => conv.id !== this.currentConversationId);
+
+    if (conversations.length === 0) {
+      list.createDiv({ cls: 'claude-agent-history-empty', text: 'No other conversations' });
+      return;
+    }
+
+    for (const conv of conversations) {
+      const item = list.createDiv({ cls: 'claude-agent-history-item' });
+
+      // Icon
+      const iconEl = item.createDiv({ cls: 'claude-agent-history-item-icon' });
+      setIcon(iconEl, 'message-square');
+
+      // Content area (clickable to switch)
+      const content = item.createDiv({ cls: 'claude-agent-history-item-content' });
+      content.createDiv({ cls: 'claude-agent-history-item-title', text: conv.title });
+      content.createDiv({
+        cls: 'claude-agent-history-item-date',
+        text: this.formatDate(conv.updatedAt),
+      });
+
+      content.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        await this.onConversationSelect(conv.id);
+      });
+
+      // Action buttons
+      const actions = item.createDiv({ cls: 'claude-agent-history-item-actions' });
+
+      const renameBtn = actions.createEl('button', { cls: 'claude-agent-action-btn' });
+      setIcon(renameBtn, 'pencil');
+      renameBtn.setAttribute('aria-label', 'Rename');
+      renameBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        this.showRenameInput(item, conv.id, conv.title);
+      });
+
+      const deleteBtn = actions.createEl('button', { cls: 'claude-agent-action-btn claude-agent-delete-btn' });
+      setIcon(deleteBtn, 'trash-2');
+      deleteBtn.setAttribute('aria-label', 'Delete');
+      deleteBtn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        if (this.isStreaming) {
+          return;
+        }
+        await this.plugin.deleteConversation(conv.id);
+        this.updateHistoryDropdown();
+
+        // If deleted current, reload the new active
+        if (conv.id === this.currentConversationId) {
+          await this.loadActiveConversation();
+        }
+      });
+    }
+  }
+
+  /**
+   * Show inline rename input
+   */
+  private showRenameInput(item: HTMLElement, convId: string, currentTitle: string) {
+    const titleEl = item.querySelector('.claude-agent-history-item-title') as HTMLElement;
+    if (!titleEl) return;
+
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.className = 'claude-agent-rename-input';
+    input.value = currentTitle;
+
+    titleEl.replaceWith(input);
+    input.focus();
+    input.select();
+
+    const finishRename = async () => {
+      const newTitle = input.value.trim() || currentTitle;
+      await this.plugin.renameConversation(convId, newTitle);
+
+      // Update dropdown
+      this.updateHistoryDropdown();
+    };
+
+    input.addEventListener('blur', finishRename);
+    input.addEventListener('keydown', async (e) => {
+      if (e.key === 'Enter') {
+        input.blur();
+      } else if (e.key === 'Escape') {
+        input.value = currentTitle;
+        input.blur();
+      }
+    });
+  }
+
+  /**
+   * Generate title from first user message
+   */
+  private generateTitle(firstMessage: string): string {
+    // Extract first sentence or first 50 chars
+    const firstSentence = firstMessage.split(/[.!?\n]/)[0].trim();
+    const autoTitle = firstSentence.substring(0, 50);
+    const suffix = firstSentence.length > 50 ? '...' : '';
+
+    return `${autoTitle}${suffix}`;
+  }
+
+  /**
+   * Format date for display
+   */
+  private formatDate(timestamp: number): string {
+    const date = new Date(timestamp);
+    const now = new Date();
+
+    if (date.toDateString() === now.toDateString()) {
+      return date.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+    }
+    return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
   }
 
   private generateId(): string {

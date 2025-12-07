@@ -3,7 +3,7 @@ import * as path from 'path';
 import * as os from 'os';
 import { query, type Options } from '@anthropic-ai/claude-agent-sdk';
 import type ClaudeAgentPlugin from './main';
-import { StreamChunk } from './types';
+import { StreamChunk, ChatMessage, ToolCallInfo } from './types';
 import { SYSTEM_PROMPT } from './systemPrompt';
 
 export class ClaudeAgentService {
@@ -41,8 +41,10 @@ export class ClaudeAgentService {
 
   /**
    * Send a query to Claude and stream the response
+   * @param prompt The user's message
+   * @param conversationHistory Optional message history for session expiration recovery
    */
-  async *query(prompt: string): AsyncGenerator<StreamChunk> {
+  async *query(prompt: string, conversationHistory?: ChatMessage[]): AsyncGenerator<StreamChunk> {
     // Get vault path
     const vaultPath = this.getVaultPath();
     if (!vaultPath) {
@@ -66,11 +68,123 @@ export class ClaudeAgentService {
     try {
       yield* this.queryViaSDK(prompt, vaultPath);
     } catch (error) {
+      // Handle session expiration - rebuild context and retry
+      if (this.isSessionExpiredError(error) && conversationHistory && conversationHistory.length > 0) {
+        this.sessionId = null;
+
+        // Rebuild context from history
+        const historyContext = this.buildContextFromHistory(conversationHistory);
+        const lastUserMessage = this.getLastUserMessage(conversationHistory);
+        const shouldAppendPrompt = !lastUserMessage || lastUserMessage.content.trim() !== prompt.trim();
+        const fullPrompt = historyContext
+          ? shouldAppendPrompt
+            ? `${historyContext}\n\nUser: ${prompt}`
+            : historyContext
+          : prompt;
+
+        // Retry without resume
+        try {
+          yield* this.queryViaSDK(fullPrompt, vaultPath);
+        } catch (retryError) {
+          const msg = retryError instanceof Error ? retryError.message : 'Unknown error';
+          yield { type: 'error', content: msg };
+        }
+        return;
+      }
+
       const msg = error instanceof Error ? error.message : 'Unknown error';
       yield { type: 'error', content: msg };
     } finally {
       this.abortController = null;
     }
+  }
+
+  /**
+   * Build conversation context from message history
+   */
+  private buildContextFromHistory(messages: ChatMessage[]): string {
+    const parts: string[] = [];
+
+    for (const message of messages) {
+      if (message.role !== 'user' && message.role !== 'assistant') {
+        continue;
+      }
+
+      if (message.role === 'assistant') {
+        const hasContent = message.content && message.content.trim().length > 0;
+        const hasToolResult = message.toolCalls?.some(tc => tc.result && tc.result.trim().length > 0);
+        if (!hasContent && !hasToolResult) {
+          continue;
+        }
+      }
+
+      const role = message.role === 'user' ? 'User' : 'Assistant';
+      const lines: string[] = [];
+      const content = message.content?.trim();
+      lines.push(content ? `${role}: ${content}` : `${role}:`);
+
+      if (message.role === 'assistant' && message.toolCalls?.length) {
+        const toolLines = message.toolCalls
+          .map(tc => this.formatToolCallForContext(tc))
+          .filter(Boolean) as string[];
+        if (toolLines.length > 0) {
+          lines.push(...toolLines);
+        }
+      }
+
+      parts.push(lines.join('\n'));
+    }
+
+    return parts.join('\n\n');
+  }
+
+  /**
+   * Check if an error is a session expiration error
+   */
+  private isSessionExpiredError(error: unknown): boolean {
+    const msg = error instanceof Error ? error.message.toLowerCase() : '';
+    return msg.includes('session') ||
+           msg.includes('expired') ||
+           msg.includes('not found') ||
+           msg.includes('invalid');
+  }
+
+  /**
+   * Get the last user message in a conversation history
+   */
+  private getLastUserMessage(messages: ChatMessage[]): ChatMessage | undefined {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i].role === 'user') {
+        return messages[i];
+      }
+    }
+    return undefined;
+  }
+
+  /**
+   * Format a tool call line for inclusion in recovery context
+   */
+  private formatToolCallForContext(toolCall: ToolCallInfo): string {
+    const status = toolCall.status ?? 'completed';
+    const base = `[Tool ${toolCall.name} status=${status}]`;
+    const hasResult = typeof toolCall.result === 'string' && toolCall.result.trim().length > 0;
+
+    if (!hasResult) {
+      return base;
+    }
+
+    const result = this.truncateToolResultForContext(toolCall.result as string);
+    return `${base} result: ${result}`;
+  }
+
+  /**
+   * Truncate tool result to avoid overloading recovery prompt
+   */
+  private truncateToolResultForContext(result: string, maxLength = 800): string {
+    if (result.length > maxLength) {
+      return `${result.slice(0, maxLength)}... (truncated)`;
+    }
+    return result;
   }
 
   private async *queryViaSDK(prompt: string, cwd: string): AsyncGenerator<StreamChunk> {
@@ -267,6 +381,20 @@ export class ClaudeAgentService {
    */
   resetSession() {
     this.sessionId = null;
+  }
+
+  /**
+   * Get the current session ID
+   */
+  getSessionId(): string | null {
+    return this.sessionId;
+  }
+
+  /**
+   * Set the session ID (for restoring from saved conversation)
+   */
+  setSessionId(id: string | null): void {
+    this.sessionId = id;
   }
 
   /**

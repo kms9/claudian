@@ -3,8 +3,10 @@ import {
   DEFAULT_SETTINGS,
   ClaudeAgentSettings,
   ChatMessage,
-  ToolUseInfo,
+  ToolCallInfo,
   StreamChunk,
+  Conversation,
+  ConversationMeta,
 } from '../src/types';
 
 describe('types.ts', () => {
@@ -59,6 +61,10 @@ describe('types.ts', () => {
     it('should have exactly 7 default blocked commands', () => {
       expect(DEFAULT_SETTINGS.blockedCommands).toHaveLength(7);
     });
+
+    it('should have maxConversations set to 50 by default', () => {
+      expect(DEFAULT_SETTINGS.maxConversations).toBe(50);
+    });
   });
 
   describe('ClaudeAgentSettings type', () => {
@@ -67,11 +73,13 @@ describe('types.ts', () => {
         enableBlocklist: false,
         blockedCommands: ['test'],
         showToolUse: false,
+        maxConversations: 25,
       };
 
       expect(settings.enableBlocklist).toBe(false);
       expect(settings.blockedCommands).toEqual(['test']);
       expect(settings.showToolUse).toBe(false);
+      expect(settings.maxConversations).toBe(25);
     });
   });
 
@@ -109,9 +117,15 @@ describe('types.ts', () => {
       expect(msg.role).toBe('system');
     });
 
-    it('should accept optional toolUse array', () => {
-      const toolUse: ToolUseInfo[] = [
-        { name: 'Read', input: { file_path: '/test.txt' } },
+    it('should accept optional toolCalls array', () => {
+      const toolCalls: ToolCallInfo[] = [
+        {
+          id: 'tool-1',
+          name: 'Read',
+          input: { file_path: '/test.txt' },
+          status: 'completed',
+          result: 'file contents',
+        },
       ];
 
       const msg: ChatMessage = {
@@ -119,22 +133,51 @@ describe('types.ts', () => {
         role: 'assistant',
         content: 'Reading file...',
         timestamp: Date.now(),
-        toolUse,
+        toolCalls,
       };
 
-      expect(msg.toolUse).toEqual(toolUse);
+      expect(msg.toolCalls).toEqual(toolCalls);
     });
   });
 
-  describe('ToolUseInfo type', () => {
-    it('should store tool name and input', () => {
-      const toolUse: ToolUseInfo = {
+  describe('ToolCallInfo type', () => {
+    it('should store tool name, input, status, and result', () => {
+      const toolCall: ToolCallInfo = {
+        id: 'tool-123',
         name: 'Bash',
         input: { command: 'ls -la' },
+        status: 'completed',
+        result: 'file1.txt\nfile2.txt',
       };
 
-      expect(toolUse.name).toBe('Bash');
-      expect(toolUse.input).toEqual({ command: 'ls -la' });
+      expect(toolCall.id).toBe('tool-123');
+      expect(toolCall.name).toBe('Bash');
+      expect(toolCall.input).toEqual({ command: 'ls -la' });
+      expect(toolCall.status).toBe('completed');
+      expect(toolCall.result).toBe('file1.txt\nfile2.txt');
+    });
+
+    it('should accept running status', () => {
+      const toolCall: ToolCallInfo = {
+        id: 'tool-123',
+        name: 'Read',
+        input: { file_path: '/test.txt' },
+        status: 'running',
+      };
+
+      expect(toolCall.status).toBe('running');
+    });
+
+    it('should accept error status', () => {
+      const toolCall: ToolCallInfo = {
+        id: 'tool-123',
+        name: 'Read',
+        input: { file_path: '/test.txt' },
+        status: 'error',
+        result: 'File not found',
+      };
+
+      expect(toolCall.status).toBe('error');
     });
   });
 
@@ -154,12 +197,14 @@ describe('types.ts', () => {
     it('should accept tool_use type', () => {
       const chunk: StreamChunk = {
         type: 'tool_use',
+        id: 'tool-123',
         name: 'Read',
         input: { file_path: '/test.txt' },
       };
 
       expect(chunk.type).toBe('tool_use');
       if (chunk.type === 'tool_use') {
+        expect(chunk.id).toBe('tool-123');
         expect(chunk.name).toBe('Read');
         expect(chunk.input).toEqual({ file_path: '/test.txt' });
       }
@@ -168,11 +213,13 @@ describe('types.ts', () => {
     it('should accept tool_result type', () => {
       const chunk: StreamChunk = {
         type: 'tool_result',
+        id: 'tool-123',
         content: 'File contents here',
       };
 
       expect(chunk.type).toBe('tool_result');
       if (chunk.type === 'tool_result') {
+        expect(chunk.id).toBe('tool-123');
         expect(chunk.content).toBe('File contents here');
       }
     });
@@ -207,6 +254,93 @@ describe('types.ts', () => {
       };
 
       expect(chunk.type).toBe('done');
+    });
+  });
+
+  describe('Conversation type', () => {
+    it('should store conversation with all required fields', () => {
+      const conversation: Conversation = {
+        id: 'conv-123',
+        title: 'Test Conversation',
+        createdAt: 1700000000000,
+        updatedAt: 1700000001000,
+        sessionId: 'session-abc',
+        messages: [],
+      };
+
+      expect(conversation.id).toBe('conv-123');
+      expect(conversation.title).toBe('Test Conversation');
+      expect(conversation.createdAt).toBe(1700000000000);
+      expect(conversation.updatedAt).toBe(1700000001000);
+      expect(conversation.sessionId).toBe('session-abc');
+      expect(conversation.messages).toEqual([]);
+    });
+
+    it('should allow null sessionId for new conversations', () => {
+      const conversation: Conversation = {
+        id: 'conv-456',
+        title: 'New Chat',
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+        sessionId: null,
+        messages: [],
+      };
+
+      expect(conversation.sessionId).toBeNull();
+    });
+
+    it('should store messages array with ChatMessage objects', () => {
+      const messages: ChatMessage[] = [
+        { id: 'msg-1', role: 'user', content: 'Hello', timestamp: Date.now() },
+        { id: 'msg-2', role: 'assistant', content: 'Hi there!', timestamp: Date.now() },
+      ];
+
+      const conversation: Conversation = {
+        id: 'conv-789',
+        title: 'Chat with Messages',
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+        sessionId: 'session-xyz',
+        messages,
+      };
+
+      expect(conversation.messages).toHaveLength(2);
+      expect(conversation.messages[0].role).toBe('user');
+      expect(conversation.messages[1].role).toBe('assistant');
+    });
+  });
+
+  describe('ConversationMeta type', () => {
+    it('should store conversation metadata without messages', () => {
+      const meta: ConversationMeta = {
+        id: 'conv-123',
+        title: 'Test Conversation',
+        createdAt: 1700000000000,
+        updatedAt: 1700000001000,
+        messageCount: 5,
+        preview: 'Hello, how can I...',
+      };
+
+      expect(meta.id).toBe('conv-123');
+      expect(meta.title).toBe('Test Conversation');
+      expect(meta.createdAt).toBe(1700000000000);
+      expect(meta.updatedAt).toBe(1700000001000);
+      expect(meta.messageCount).toBe(5);
+      expect(meta.preview).toBe('Hello, how can I...');
+    });
+
+    it('should have preview for empty conversations', () => {
+      const meta: ConversationMeta = {
+        id: 'conv-empty',
+        title: 'Empty Chat',
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+        messageCount: 0,
+        preview: 'New conversation',
+      };
+
+      expect(meta.messageCount).toBe(0);
+      expect(meta.preview).toBe('New conversation');
     });
   });
 });

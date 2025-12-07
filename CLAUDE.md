@@ -130,11 +130,25 @@ interface ClaudeAgentSettings {
 
 ### Layout
 - `.claude-agent-container` - Main container
-- `.claude-agent-header` - Header with title and clear button
+- `.claude-agent-header` - Header with title and action buttons
+- `.claude-agent-title` - Logo and title container
+- `.claude-agent-header-actions` - Right side action buttons container
+- `.claude-agent-header-btn` - Icon buttons in header (history, new)
 - `.claude-agent-messages` - Messages scroll area
 - `.claude-agent-input-container` - Input area wrapper
 - `.claude-agent-input` - Textarea input
-- `.claude-agent-send-btn` - Send button
+
+### Chat History
+- `.claude-agent-history-container` - Dropdown container (positioned relative)
+- `.claude-agent-history-menu` - Dropdown menu (anchored to right)
+- `.claude-agent-history-header` - "Conversations" header in dropdown
+- `.claude-agent-history-list` - Scrollable conversation list
+- `.claude-agent-history-item` - Individual conversation entry
+- `.claude-agent-history-item-icon` - Chat icon for each entry
+- `.claude-agent-history-item-content` - Title and date container
+- `.claude-agent-history-item-title` - Conversation title (first 50 chars)
+- `.claude-agent-history-item-date` - Timestamp metadata
+- `.claude-agent-history-item-actions` - Rename/delete buttons
 
 ### Messages
 - `.claude-agent-message` - Individual message
@@ -156,3 +170,6 @@ interface ClaudeAgentSettings {
 - `.claude-agent-tool-input` - Input parameters section
 - `.claude-agent-tool-result` - Result output section
 - `.claude-agent-tool-code` - Code/output display
+
+## Notes
+- when ask to generate a md file about the finding, implementation of your work, put the file in dev/

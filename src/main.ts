@@ -2,11 +2,13 @@ import { Plugin } from 'obsidian';
 import { ClaudeAgentView } from './ClaudeAgentView';
 import { ClaudeAgentService } from './ClaudeAgentService';
 import { ClaudeAgentSettingTab } from './ClaudeAgentSettings';
-import { ClaudeAgentSettings, DEFAULT_SETTINGS, VIEW_TYPE_CLAUDE_AGENT } from './types';
+import { ClaudeAgentSettings, DEFAULT_SETTINGS, VIEW_TYPE_CLAUDE_AGENT, Conversation, ConversationMeta } from './types';
 
 export default class ClaudeAgentPlugin extends Plugin {
   settings: ClaudeAgentSettings;
   agentService: ClaudeAgentService;
+  private conversations: Conversation[] = [];
+  private activeConversationId: string | null = null;
 
   async onload() {
     console.log('Loading Claude Agent plugin');
@@ -68,10 +70,189 @@ export default class ClaudeAgentPlugin extends Plugin {
   }
 
   async loadSettings() {
-    this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+    const data = await this.loadData() || {};
+    this.settings = Object.assign({}, DEFAULT_SETTINGS, data);
+    this.conversations = data.conversations || [];
+    this.activeConversationId = data.activeConversationId || null;
+
+    // Validate active conversation still exists
+    if (this.activeConversationId &&
+        !this.conversations.find(c => c.id === this.activeConversationId)) {
+      this.activeConversationId = null;
+    }
   }
 
   async saveSettings() {
-    await this.saveData(this.settings);
+    await this.saveData({
+      ...this.settings,
+      conversations: this.conversations,
+      activeConversationId: this.activeConversationId,
+    });
+  }
+
+  /**
+   * Generate a unique conversation ID
+   */
+  private generateConversationId(): string {
+    return `conv-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+  }
+
+  /**
+   * Generate a default title with timestamp
+   */
+  private generateDefaultTitle(): string {
+    const now = new Date();
+    return now.toLocaleString(undefined, {
+      month: 'short',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+  }
+
+  /**
+   * Get preview text from a conversation
+   */
+  private getConversationPreview(conv: Conversation): string {
+    const firstUserMsg = conv.messages.find(m => m.role === 'user');
+    if (!firstUserMsg) return 'New conversation';
+    return firstUserMsg.content.substring(0, 50) + (firstUserMsg.content.length > 50 ? '...' : '');
+  }
+
+  /**
+   * Prune old conversations to stay within limit
+   */
+  private pruneOldConversations(): void {
+    const max = this.settings.maxConversations || 50;
+    if (this.conversations.length <= max) {
+      return;
+    }
+
+    const activeId = this.activeConversationId;
+    const pruned = this.conversations.slice(0, max);
+
+    if (activeId && !pruned.some(c => c.id === activeId)) {
+      const activeConversation = this.conversations.find(c => c.id === activeId);
+      if (activeConversation) {
+        pruned.pop();
+        pruned.push(activeConversation);
+      }
+    }
+
+    this.conversations = pruned;
+
+    if (this.activeConversationId && !this.conversations.some(c => c.id === this.activeConversationId)) {
+      const fallback = this.conversations[0];
+      this.activeConversationId = fallback ? fallback.id : null;
+      this.agentService.setSessionId(fallback?.sessionId ?? null);
+    }
+  }
+
+  /**
+   * Create a new conversation and set it as active
+   */
+  async createConversation(): Promise<Conversation> {
+    const conversation: Conversation = {
+      id: this.generateConversationId(),
+      title: this.generateDefaultTitle(),
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      sessionId: null,
+      messages: [],
+    };
+
+    // Add to front of list
+    this.conversations.unshift(conversation);
+    this.activeConversationId = conversation.id;
+
+    // Enforce max limit
+    this.pruneOldConversations();
+
+    // Reset agent service session
+    this.agentService.resetSession();
+
+    await this.saveSettings();
+    return conversation;
+  }
+
+  /**
+   * Switch to an existing conversation
+   */
+  async switchConversation(id: string): Promise<Conversation | null> {
+    const conversation = this.conversations.find(c => c.id === id);
+    if (!conversation) return null;
+
+    this.activeConversationId = id;
+
+    // Restore session ID to agent service
+    this.agentService.setSessionId(conversation.sessionId);
+
+    await this.saveSettings();
+    return conversation;
+  }
+
+  /**
+   * Delete a conversation
+   */
+  async deleteConversation(id: string): Promise<void> {
+    const index = this.conversations.findIndex(c => c.id === id);
+    if (index === -1) return;
+
+    this.conversations.splice(index, 1);
+
+    // If deleted active conversation, switch to newest or create new
+    if (this.activeConversationId === id) {
+      if (this.conversations.length > 0) {
+        await this.switchConversation(this.conversations[0].id);
+      } else {
+        await this.createConversation();
+      }
+    } else {
+      await this.saveSettings();
+    }
+  }
+
+  /**
+   * Rename a conversation
+   */
+  async renameConversation(id: string, title: string): Promise<void> {
+    const conversation = this.conversations.find(c => c.id === id);
+    if (!conversation) return;
+
+    conversation.title = title.trim() || this.generateDefaultTitle();
+    conversation.updatedAt = Date.now();
+    await this.saveSettings();
+  }
+
+  /**
+   * Update conversation (messages, sessionId, etc.)
+   */
+  async updateConversation(id: string, updates: Partial<Conversation>): Promise<void> {
+    const conversation = this.conversations.find(c => c.id === id);
+    if (!conversation) return;
+
+    Object.assign(conversation, updates, { updatedAt: Date.now() });
+    await this.saveSettings();
+  }
+
+  /**
+   * Get current active conversation
+   */
+  getActiveConversation(): Conversation | null {
+    return this.conversations.find(c => c.id === this.activeConversationId) || null;
+  }
+
+  /**
+   * Get conversation metadata list for dropdown
+   */
+  getConversationList(): ConversationMeta[] {
+    return this.conversations.map(c => ({
+      id: c.id,
+      title: c.title,
+      createdAt: c.createdAt,
+      updatedAt: c.updatedAt,
+      messageCount: c.messages.length,
+      preview: this.getConversationPreview(c),
+    }));
   }
 }

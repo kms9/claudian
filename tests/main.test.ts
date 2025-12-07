@@ -177,7 +177,7 @@ describe('ClaudeAgentPlugin', () => {
   });
 
   describe('saveSettings', () => {
-    it('should call saveData with current settings', async () => {
+    it('should call saveData with settings and conversations', async () => {
       await plugin.onload();
 
       plugin.settings.enableBlocklist = false;
@@ -185,7 +185,16 @@ describe('ClaudeAgentPlugin', () => {
 
       await plugin.saveSettings();
 
-      expect((plugin.saveData as jest.Mock)).toHaveBeenCalledWith(plugin.settings);
+      expect((plugin.saveData as jest.Mock)).toHaveBeenCalledWith(
+        expect.objectContaining({
+          enableBlocklist: false,
+          showToolUse: false,
+          conversations: expect.any(Array),
+        })
+      );
+      // Also verify the structure includes activeConversationId (can be null or string)
+      const savedData = (plugin.saveData as jest.Mock).mock.calls[0][0];
+      expect(savedData).toHaveProperty('activeConversationId');
     });
   });
 
@@ -214,6 +223,290 @@ describe('ClaudeAgentPlugin', () => {
       commandConfig.callback();
 
       expect(activateViewSpy).toHaveBeenCalled();
+    });
+  });
+
+  describe('createConversation', () => {
+    it('should create a new conversation with unique ID', async () => {
+      await plugin.onload();
+
+      const conv = await plugin.createConversation();
+
+      expect(conv.id).toMatch(/^conv-\d+-[a-z0-9]+$/);
+      expect(conv.messages).toEqual([]);
+      expect(conv.sessionId).toBeNull();
+    });
+
+    it('should set new conversation as active', async () => {
+      await plugin.onload();
+
+      const conv = await plugin.createConversation();
+      const active = plugin.getActiveConversation();
+
+      expect(active?.id).toBe(conv.id);
+    });
+
+    it('should generate default title with timestamp', async () => {
+      await plugin.onload();
+
+      const conv = await plugin.createConversation();
+
+      // Title should contain month and time
+      expect(conv.title).toBeTruthy();
+      expect(conv.title.length).toBeGreaterThan(0);
+    });
+
+    it('should reset agent service session', async () => {
+      await plugin.onload();
+
+      const resetSessionSpy = jest.spyOn(plugin.agentService, 'resetSession');
+
+      await plugin.createConversation();
+
+      expect(resetSessionSpy).toHaveBeenCalled();
+    });
+  });
+
+  describe('switchConversation', () => {
+    it('should switch to existing conversation', async () => {
+      await plugin.onload();
+
+      const conv1 = await plugin.createConversation();
+      const conv2 = await plugin.createConversation();
+
+      expect(plugin.getActiveConversation()?.id).toBe(conv2.id);
+
+      await plugin.switchConversation(conv1.id);
+
+      expect(plugin.getActiveConversation()?.id).toBe(conv1.id);
+    });
+
+    it('should restore session ID when switching', async () => {
+      await plugin.onload();
+
+      const conv1 = await plugin.createConversation();
+      await plugin.updateConversation(conv1.id, { sessionId: 'session-123' });
+
+      await plugin.createConversation();
+
+      const setSessionIdSpy = jest.spyOn(plugin.agentService, 'setSessionId');
+
+      await plugin.switchConversation(conv1.id);
+
+      expect(setSessionIdSpy).toHaveBeenCalledWith('session-123');
+    });
+
+    it('should return null for non-existent conversation', async () => {
+      await plugin.onload();
+
+      const result = await plugin.switchConversation('non-existent-id');
+
+      expect(result).toBeNull();
+    });
+  });
+
+  describe('deleteConversation', () => {
+    it('should delete conversation by ID', async () => {
+      await plugin.onload();
+
+      const conv = await plugin.createConversation();
+      const convId = conv.id;
+
+      // Create another so we have at least one left
+      await plugin.createConversation();
+
+      await plugin.deleteConversation(convId);
+
+      const list = plugin.getConversationList();
+      expect(list.find(c => c.id === convId)).toBeUndefined();
+    });
+
+    it('should create new conversation if deleted active and no others exist', async () => {
+      await plugin.onload();
+
+      const conv = await plugin.createConversation();
+
+      await plugin.deleteConversation(conv.id);
+
+      // Should have created a new conversation
+      const active = plugin.getActiveConversation();
+      expect(active).not.toBeNull();
+      expect(active?.id).not.toBe(conv.id);
+    });
+
+    it('should switch to first conversation if deleted active', async () => {
+      await plugin.onload();
+
+      const conv1 = await plugin.createConversation();
+      const conv2 = await plugin.createConversation();
+
+      // Active is conv2
+      expect(plugin.getActiveConversation()?.id).toBe(conv2.id);
+
+      await plugin.deleteConversation(conv2.id);
+
+      // Should switch to conv1
+      expect(plugin.getActiveConversation()?.id).toBe(conv1.id);
+    });
+  });
+
+  describe('renameConversation', () => {
+    it('should rename conversation', async () => {
+      await plugin.onload();
+
+      const conv = await plugin.createConversation();
+
+      await plugin.renameConversation(conv.id, 'New Title');
+
+      const updated = plugin.getActiveConversation();
+      expect(updated?.title).toBe('New Title');
+    });
+
+    it('should use default title if empty string provided', async () => {
+      await plugin.onload();
+
+      const conv = await plugin.createConversation();
+
+      await plugin.renameConversation(conv.id, '   ');
+
+      const updated = plugin.getActiveConversation();
+      expect(updated?.title).toBeTruthy();
+    });
+  });
+
+  describe('updateConversation', () => {
+    it('should update conversation messages', async () => {
+      await plugin.onload();
+
+      const conv = await plugin.createConversation();
+      const messages = [
+        { id: 'msg-1', role: 'user' as const, content: 'Hello', timestamp: Date.now() },
+      ];
+
+      await plugin.updateConversation(conv.id, { messages });
+
+      const updated = plugin.getActiveConversation();
+      expect(updated?.messages).toEqual(messages);
+    });
+
+    it('should update conversation sessionId', async () => {
+      await plugin.onload();
+
+      const conv = await plugin.createConversation();
+
+      await plugin.updateConversation(conv.id, { sessionId: 'new-session-id' });
+
+      const updated = plugin.getActiveConversation();
+      expect(updated?.sessionId).toBe('new-session-id');
+    });
+
+    it('should update updatedAt timestamp', async () => {
+      await plugin.onload();
+
+      const conv = await plugin.createConversation();
+      const originalUpdatedAt = conv.updatedAt;
+
+      // Small delay to ensure timestamp differs
+      await new Promise(resolve => setTimeout(resolve, 10));
+
+      await plugin.updateConversation(conv.id, { title: 'Changed' });
+
+      const updated = plugin.getActiveConversation();
+      expect(updated?.updatedAt).toBeGreaterThan(originalUpdatedAt);
+    });
+  });
+
+  describe('getConversationList', () => {
+    it('should return conversation metadata', async () => {
+      await plugin.onload();
+
+      await plugin.createConversation();
+
+      const list = plugin.getConversationList();
+
+      expect(list.length).toBeGreaterThan(0);
+      expect(list[0]).toHaveProperty('id');
+      expect(list[0]).toHaveProperty('title');
+      expect(list[0]).toHaveProperty('messageCount');
+      expect(list[0]).toHaveProperty('preview');
+    });
+
+    it('should return preview from first user message', async () => {
+      await plugin.onload();
+
+      const conv = await plugin.createConversation();
+      await plugin.updateConversation(conv.id, {
+        messages: [
+          { id: 'msg-1', role: 'user', content: 'Hello Claude', timestamp: Date.now() },
+        ],
+      });
+
+      const list = plugin.getConversationList();
+      const meta = list.find(c => c.id === conv.id);
+
+      expect(meta?.preview).toContain('Hello Claude');
+    });
+  });
+
+  describe('loadSettings with conversations', () => {
+    it('should load saved conversations', async () => {
+      const savedConversations = [
+        {
+          id: 'conv-saved-1',
+          title: 'Saved Chat',
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+          sessionId: 'saved-session',
+          messages: [],
+        },
+      ];
+
+      (plugin.loadData as jest.Mock).mockResolvedValue({
+        conversations: savedConversations,
+        activeConversationId: 'conv-saved-1',
+      });
+
+      await plugin.loadSettings();
+
+      const active = plugin.getActiveConversation();
+      expect(active?.id).toBe('conv-saved-1');
+      expect(active?.title).toBe('Saved Chat');
+    });
+
+    it('should handle invalid activeConversationId', async () => {
+      (plugin.loadData as jest.Mock).mockResolvedValue({
+        conversations: [],
+        activeConversationId: 'non-existent',
+      });
+
+      await plugin.loadSettings();
+
+      const list = plugin.getConversationList();
+      // Should have cleared the invalid ID
+      expect(plugin.getActiveConversation()).toBeNull();
+    });
+  });
+
+  describe('max conversations pruning', () => {
+    it('should retain active conversation when pruning to max limit', async () => {
+      await plugin.onload();
+
+      // Create conversations with default max (50)
+      const conv1 = await plugin.createConversation();
+      await plugin.createConversation();
+
+      // Switch to older conversation
+      await plugin.switchConversation(conv1.id);
+
+      // Now set max to 1 and force prune
+      plugin.settings.maxConversations = 1;
+      (plugin as any).pruneOldConversations();
+
+      // Active conversation (conv1) should be retained even though it's older
+      expect(plugin.getActiveConversation()?.id).toBe(conv1.id);
+      const list = plugin.getConversationList();
+      expect(list).toHaveLength(1);
+      expect(list[0].id).toBe(conv1.id);
     });
   });
 });

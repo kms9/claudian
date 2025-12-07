@@ -9,7 +9,8 @@ An Obsidian plugin that embeds Claude Code as a sidebar chat interface. Your vau
 - **Vault-aware**: Claude operates with your vault as the working directory
 - **Streaming responses**: See Claude's responses in real-time
 - **Tool call visualization**: Collapsible UI showing tool inputs and results (like Claude Code CLI)
-- **Session persistence**: Conversation context maintained within a session
+- **Chat history persistence**: Conversations saved across sessions with easy switching
+- **Session resume**: Continue previous conversations with full context
 - **Safety blocklist**: Optionally block dangerous commands
 
 ## Requirements
@@ -95,7 +96,8 @@ src/
 ## Roadmap
 
 - [x] Session persistence within sessions (via SDK resume)
-- [ ] Session persistence across plugin restarts
+- [x] Chat history persistence across plugin restarts
+- [x] Conversation switching with history dropdown
 - [ ] Context menu: "Ask Claude about this file"
 - [ ] Open files that Claude edits
 - [ ] Chat history export
