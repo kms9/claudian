@@ -64,6 +64,65 @@ export class ClaudianSettingTab extends PluginSettingTab {
           })
       );
 
+    // Approved Actions section
+    containerEl.createEl('h3', { text: 'Approved Actions' });
+
+    const approvedDesc = containerEl.createDiv({ cls: 'claudian-approved-desc' });
+    approvedDesc.createEl('p', {
+      text: 'Actions that have been permanently approved (via "Always Allow"). These will not require approval in Safe mode.',
+      cls: 'setting-item-description',
+    });
+
+    const approvedActions = this.plugin.settings.approvedActions;
+
+    if (approvedActions.length === 0) {
+      const emptyEl = containerEl.createDiv({ cls: 'claudian-approved-empty' });
+      emptyEl.setText('No approved actions yet. When you click "Always Allow" in the approval dialog, actions will appear here.');
+    } else {
+      const listEl = containerEl.createDiv({ cls: 'claudian-approved-list' });
+
+      for (const action of approvedActions) {
+        const itemEl = listEl.createDiv({ cls: 'claudian-approved-item' });
+
+        const infoEl = itemEl.createDiv({ cls: 'claudian-approved-item-info' });
+
+        const toolEl = infoEl.createSpan({ cls: 'claudian-approved-item-tool' });
+        toolEl.setText(action.toolName);
+
+        const patternEl = infoEl.createDiv({ cls: 'claudian-approved-item-pattern' });
+        patternEl.setText(action.pattern);
+
+        const dateEl = infoEl.createSpan({ cls: 'claudian-approved-item-date' });
+        dateEl.setText(new Date(action.approvedAt).toLocaleDateString());
+
+        const removeBtn = itemEl.createEl('button', {
+          text: 'Remove',
+          cls: 'claudian-approved-remove-btn',
+        });
+        removeBtn.addEventListener('click', async () => {
+          this.plugin.settings.approvedActions =
+            this.plugin.settings.approvedActions.filter((a) => a !== action);
+          await this.plugin.saveSettings();
+          this.display(); // Refresh
+        });
+      }
+
+      // Clear all button
+      new Setting(containerEl)
+        .setName('Clear all approved actions')
+        .setDesc('Remove all permanently approved actions')
+        .addButton((button) =>
+          button
+            .setButtonText('Clear All')
+            .setWarning()
+            .onClick(async () => {
+              this.plugin.settings.approvedActions = [];
+              await this.plugin.saveSettings();
+              this.display(); // Refresh
+            })
+        );
+    }
+
     // Info section
     containerEl.createEl('h3', { text: 'Information' });
 

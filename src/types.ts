@@ -14,6 +14,17 @@ export const CLAUDE_MODELS: { value: ClaudeModel; label: string; description: st
 // Thinking budget options
 export type ThinkingBudget = 'off' | 'low' | 'medium' | 'high';
 
+// Permission mode type
+export type PermissionMode = 'yolo' | 'normal';
+
+// Approved action structure (for memory system)
+export interface ApprovedAction {
+  toolName: string;           // e.g., 'Bash', 'Write', 'Edit'
+  pattern: string;            // Command/path pattern that was approved
+  approvedAt: number;         // Timestamp
+  scope: 'session' | 'always'; // Session-only or permanent
+}
+
 export const THINKING_BUDGETS: { value: ThinkingBudget; label: string; tokens: number }[] = [
   { value: 'off', label: 'Off', tokens: 0 },
   { value: 'low', label: 'Low', tokens: 4000 },
@@ -34,22 +45,22 @@ export interface ClaudianSettings {
   showToolUse: boolean;
   model: ClaudeModel;
   thinkingBudget: ThinkingBudget;
+  permissionMode: PermissionMode;
+  approvedActions: ApprovedAction[];
 }
 
 export const DEFAULT_SETTINGS: ClaudianSettings = {
   enableBlocklist: true,
   blockedCommands: [
     'rm -rf',
-    'rm -r /',
     'chmod 777',
     'chmod -R 777',
-    'mkfs',
-    'dd if=',
-    '> /dev/sd',
   ],
   showToolUse: true,
   model: 'claude-haiku-4-5',
   thinkingBudget: 'off',
+  permissionMode: 'yolo',
+  approvedActions: [],
 };
 
 // Conversation persistence types
@@ -95,7 +106,7 @@ export interface ToolCallInfo {
   id: string;
   name: string;
   input: Record<string, unknown>;
-  status: 'running' | 'completed' | 'error';
+  status: 'running' | 'completed' | 'error' | 'blocked';
   result?: string;
   isExpanded?: boolean;
 }

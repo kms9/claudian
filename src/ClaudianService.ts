@@ -1,17 +1,33 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { query, type Options } from '@anthropic-ai/claude-agent-sdk';
+import { query, type Options, type CanUseTool, type PermissionResult, type HookCallbackMatcher } from '@anthropic-ai/claude-agent-sdk';
 import type ClaudianPlugin from './main';
-import { StreamChunk, ChatMessage, ToolCallInfo, SDKMessage, THINKING_BUDGETS } from './types';
+import { StreamChunk, ChatMessage, ToolCallInfo, SDKMessage, THINKING_BUDGETS, ApprovedAction } from './types';
 import { SYSTEM_PROMPT } from './systemPrompt';
 import { getVaultPath } from './utils';
+
+// Callback type for requesting user approval
+export type ApprovalCallback = (
+  toolName: string,
+  input: Record<string, unknown>,
+  description: string
+) => Promise<'allow' | 'allow-always' | 'deny'>;
 
 export class ClaudianService {
   private plugin: ClaudianPlugin;
   private abortController: AbortController | null = null;
   private sessionId: string | null = null;
   private resolvedClaudePath: string | null = null;
+
+  // Approval callback for UI prompts (set by ClaudianView)
+  private approvalCallback: ApprovalCallback | null = null;
+
+  // Session-scoped approved actions (cleared on session reset)
+  private sessionApprovedActions: ApprovedAction[] = [];
+
+  // Vault path for restricting agent access
+  private vaultPath: string | null = null;
 
   constructor(plugin: ClaudianPlugin) {
     this.plugin = plugin;
@@ -213,16 +229,41 @@ export class ClaudianService {
 
   private async *queryViaSDK(prompt: string, cwd: string): AsyncGenerator<StreamChunk> {
     const selectedModel = this.plugin.settings.model;
+    const permissionMode = this.plugin.settings.permissionMode;
+
+    // Store vault path for restriction checks
+    this.vaultPath = cwd;
 
     const options: Options = {
       cwd,
       systemPrompt: SYSTEM_PROMPT,
-      permissionMode: 'bypassPermissions',
-      allowDangerouslySkipPermissions: true,
       model: selectedModel,
       abortController: this.abortController ?? undefined,
       pathToClaudeCodeExecutable: this.resolvedClaudePath!,
     };
+
+    // Create hooks for security enforcement
+    const securityHooks: HookCallbackMatcher[] = [
+      this.createBlocklistHook(),
+      this.createVaultRestrictionHook(),
+    ];
+
+    // Apply permission mode
+    if (permissionMode === 'yolo') {
+      // Yolo mode: bypass permissions but use hooks to enforce blocklist and vault restriction
+      options.permissionMode = 'bypassPermissions';
+      options.allowDangerouslySkipPermissions = true;
+      options.hooks = {
+        PreToolUse: securityHooks,
+      };
+    } else {
+      // Safe mode: use hooks for security, canUseTool for approvals
+      options.permissionMode = 'default';
+      options.canUseTool = this.createSafeModeCallback();
+      options.hooks = {
+        PreToolUse: securityHooks,
+      };
+    }
 
     // Enable extended thinking based on thinking budget setting
     const budgetSetting = this.plugin.settings.thinkingBudget;
@@ -248,14 +289,6 @@ export class ClaudianService {
 
         // transformSDKMessage now yields multiple chunks
         for (const chunk of this.transformSDKMessage(message)) {
-          // Check blocklist for bash commands
-          if (chunk.type === 'tool_use' && chunk.name === 'Bash') {
-            const command = chunk.input?.command as string || '';
-            if (this.shouldBlockCommand(command)) {
-              yield { type: 'blocked', content: `Blocked command: ${command}` };
-              continue;
-            }
-          }
           yield chunk;
         }
       }
@@ -410,6 +443,8 @@ export class ClaudianService {
    */
   resetSession() {
     this.sessionId = null;
+    // Clear session-scoped approved actions
+    this.sessionApprovedActions = [];
   }
 
   /**
@@ -432,5 +467,359 @@ export class ClaudianService {
   cleanup() {
     this.cancel();
     this.resetSession();
+  }
+
+  // ============================================
+  // Approval Memory Methods
+  // ============================================
+
+  /**
+   * Set the approval callback for UI prompts
+   */
+  setApprovalCallback(callback: ApprovalCallback | null) {
+    this.approvalCallback = callback;
+  }
+
+  /**
+   * Create PreToolUse hook to enforce blocklist
+   * This runs before EVERY tool execution, even in bypassPermissions mode
+   */
+  private createBlocklistHook(): HookCallbackMatcher {
+    return {
+      matcher: 'Bash',  // Only match Bash tool
+      hooks: [
+        async (hookInput, toolUseID, options) => {
+          // hookInput is PreToolUseHookInput with tool_name and tool_input
+          const input = hookInput as {
+            tool_name: string;
+            tool_input: { command?: string };
+          };
+          const command = input.tool_input?.command || '';
+
+          if (this.shouldBlockCommand(command)) {
+            // Use hookSpecificOutput with permissionDecision: 'deny' to block
+            return {
+              continue: false,
+              hookSpecificOutput: {
+                hookEventName: 'PreToolUse' as const,
+                permissionDecision: 'deny' as const,
+                permissionDecisionReason: `Command blocked by blocklist: ${command}`,
+              },
+            };
+          }
+
+          return { continue: true };
+        },
+      ],
+    };
+  }
+
+  /**
+   * Create PreToolUse hook to restrict file access to vault only
+   * Checks Read, Write, Edit, Glob, Grep, LS tools for path violations
+   */
+  private createVaultRestrictionHook(): HookCallbackMatcher {
+    // Match all file-related tools
+    const fileTools = ['Read', 'Write', 'Edit', 'Glob', 'Grep', 'LS', 'NotebookEdit', 'Bash'];
+
+    return {
+      hooks: [
+        async (hookInput, toolUseID, options) => {
+          const input = hookInput as {
+            tool_name: string;
+            tool_input: Record<string, unknown>;
+          };
+
+          const toolName = input.tool_name;
+
+          // Bash: inspect command for paths that escape the vault
+          if (toolName === 'Bash') {
+            const command = (input.tool_input?.command as string) || '';
+            const outsidePath = this.findOutsideVaultPathInCommand(command);
+            if (outsidePath) {
+              return {
+                continue: false,
+                hookSpecificOutput: {
+                  hookEventName: 'PreToolUse' as const,
+                  permissionDecision: 'deny' as const,
+                  permissionDecisionReason: `Access denied: Command path "${outsidePath}" is outside the vault. Agent is restricted to vault directory only.`,
+                },
+              };
+            }
+            return { continue: true };
+          }
+
+          // Skip if not a file-related tool
+          if (!fileTools.includes(toolName)) {
+            return { continue: true };
+          }
+
+          // Get the path from tool input
+          const filePath = this.getPathFromToolInput(toolName, input.tool_input);
+
+          if (filePath && !this.isPathWithinVault(filePath)) {
+            return {
+              continue: false,
+              hookSpecificOutput: {
+                hookEventName: 'PreToolUse' as const,
+                permissionDecision: 'deny' as const,
+                permissionDecisionReason: `Access denied: Path "${filePath}" is outside the vault. Agent is restricted to vault directory only.`,
+              },
+            };
+          }
+
+          return { continue: true };
+        },
+      ],
+    };
+  }
+
+  /**
+   * Extract file path from tool input based on tool type
+   */
+  private getPathFromToolInput(toolName: string, toolInput: Record<string, unknown>): string | null {
+    switch (toolName) {
+      case 'Read':
+      case 'Write':
+      case 'Edit':
+      case 'NotebookEdit':
+        return (toolInput.file_path as string) || (toolInput.notebook_path as string) || null;
+      case 'Glob':
+      case 'Grep':
+      case 'LS':
+        return (toolInput.path as string) || null;
+      default:
+        return null;
+    }
+  }
+
+  /**
+   * Check if a path is within the vault directory
+   */
+  private isPathWithinVault(filePath: string): boolean {
+    if (!this.vaultPath) return true; // No restriction if vault path not set
+
+    const vaultReal = this.resolveRealPath(this.vaultPath);
+    const expandedPath = filePath.startsWith('~/')
+      ? path.join(os.homedir(), filePath.slice(2))
+      : filePath;
+    const candidate = path.isAbsolute(expandedPath)
+      ? expandedPath
+      : path.resolve(this.vaultPath, expandedPath);
+    const resolvedPath = this.resolveRealPath(candidate);
+
+    // Check if the path starts with the vault path (or is exactly the vault)
+    return resolvedPath === vaultReal ||
+           resolvedPath.startsWith(vaultReal + path.sep);
+  }
+
+  /**
+   * Best-effort realpath that falls back to path.resolve for non-existent targets
+   */
+  private resolveRealPath(p: string): string {
+    try {
+      return (fs.realpathSync.native ?? fs.realpathSync)(p);
+    } catch {
+      return path.resolve(p);
+    }
+  }
+
+  /**
+   * Find the first command path that escapes the vault, if any
+   */
+  private findOutsideVaultPathInCommand(command: string): string | null {
+    if (!command || !this.vaultPath) return null;
+
+    const candidates = this.extractPathCandidates(command);
+    for (const candidate of candidates) {
+      const normalized = candidate.startsWith('~/')
+        ? path.join(os.homedir(), candidate.slice(2))
+        : candidate;
+
+      if (!this.isPathWithinVault(normalized)) {
+        return candidate;
+      }
+    }
+
+    return null;
+  }
+
+  /**
+   * Naive tokenizer to pull out path-like segments from a bash command
+   */
+  private extractPathCandidates(command: string): string[] {
+    const candidates = new Set<string>();
+    const tokenRegex = /(['"`])(.*?)\1|[^\s]+/g;
+    let match: RegExpExecArray | null;
+
+    while ((match = tokenRegex.exec(command)) !== null) {
+      const token = match[2] ?? match[0];
+      const cleaned = token.trim();
+      if (!cleaned) continue;
+      if (cleaned === '.' || cleaned === '/') continue;
+
+      // Consider tokens with path separators or explicit traversal as path-like
+      if (cleaned.includes(path.sep) || cleaned.startsWith('..') || cleaned.startsWith('~/')) {
+        candidates.add(cleaned);
+      }
+    }
+
+    return Array.from(candidates);
+  }
+
+  /**
+   * Create callback for Safe mode - check approved actions, then prompt user
+   * Note: Blocklist is enforced by PreToolUse hook, not here
+   */
+  private createSafeModeCallback(): CanUseTool {
+    return async (toolName, input, options): Promise<PermissionResult> => {
+      // Check if action is pre-approved
+      if (this.isActionApproved(toolName, input)) {
+        return { behavior: 'allow', updatedInput: input };
+      }
+
+      // If no approval callback is set, deny the action
+      if (!this.approvalCallback) {
+        return {
+          behavior: 'deny',
+          message: 'No approval handler available. Please enable Yolo mode or configure permissions.',
+        };
+      }
+
+      // Generate description for the user
+      const description = this.getActionDescription(toolName, input);
+
+      // Request approval from the user
+      try {
+        const decision = await this.approvalCallback(toolName, input, description);
+
+        if (decision === 'deny') {
+          return {
+            behavior: 'deny',
+            message: 'User denied this action.',
+            interrupt: false,
+          };
+        }
+
+        // Approve the action and potentially save to memory
+        if (decision === 'allow-always') {
+          await this.approveAction(toolName, input, 'always');
+        } else if (decision === 'allow') {
+          this.approveAction(toolName, input, 'session');
+        }
+
+        return { behavior: 'allow', updatedInput: input };
+      } catch (error) {
+        return {
+          behavior: 'deny',
+          message: 'Approval request failed.',
+          interrupt: true,
+        };
+      }
+    };
+  }
+
+  /**
+   * Check if an action is pre-approved (either session or permanent)
+   */
+  private isActionApproved(toolName: string, input: Record<string, unknown>): boolean {
+    const pattern = this.getActionPattern(toolName, input);
+
+    // Check session-scoped approvals
+    const sessionApproved = this.sessionApprovedActions.some(
+      action => action.toolName === toolName && this.matchesPattern(toolName, pattern, action.pattern)
+    );
+    if (sessionApproved) return true;
+
+    // Check permanent approvals
+    const permanentApproved = this.plugin.settings.approvedActions.some(
+      action => action.toolName === toolName && this.matchesPattern(toolName, pattern, action.pattern)
+    );
+    return permanentApproved;
+  }
+
+  /**
+   * Add an action to the approved list
+   */
+  async approveAction(toolName: string, input: Record<string, unknown>, scope: 'session' | 'always'): Promise<void> {
+    const pattern = this.getActionPattern(toolName, input);
+    const action: ApprovedAction = {
+      toolName,
+      pattern,
+      approvedAt: Date.now(),
+      scope,
+    };
+
+    if (scope === 'session') {
+      this.sessionApprovedActions.push(action);
+    } else {
+      this.plugin.settings.approvedActions.push(action);
+      await this.plugin.saveSettings();
+    }
+  }
+
+  /**
+   * Generate a pattern from tool input for matching
+   */
+  private getActionPattern(toolName: string, input: Record<string, unknown>): string {
+    switch (toolName) {
+      case 'Bash':
+        return typeof input.command === 'string' ? input.command.trim() : '';
+      case 'Read':
+      case 'Write':
+      case 'Edit':
+        return (input.file_path as string) || '*';
+      case 'NotebookEdit':
+        return (input.notebook_path as string) || (input.file_path as string) || '*';
+      case 'Glob':
+        return (input.pattern as string) || '*';
+      case 'Grep':
+        return (input.pattern as string) || '*';
+      default:
+        return JSON.stringify(input);
+    }
+  }
+
+  /**
+   * Check if a pattern matches an approved pattern
+   * Currently uses exact match, can be enhanced with glob support
+   */
+  private matchesPattern(toolName: string, actionPattern: string, approvedPattern: string): boolean {
+    if (toolName === 'Bash') {
+      return actionPattern === approvedPattern;
+    }
+
+    // Wildcard matches everything
+    if (approvedPattern === '*') return true;
+
+    // Exact match
+    if (actionPattern === approvedPattern) return true;
+
+    // Check if approved pattern is a prefix (for file paths)
+    if (actionPattern.startsWith(approvedPattern)) return true;
+
+    return false;
+  }
+
+  /**
+   * Generate a human-readable description of the action
+   */
+  private getActionDescription(toolName: string, input: Record<string, unknown>): string {
+    switch (toolName) {
+      case 'Bash':
+        return `Run command: ${input.command}`;
+      case 'Read':
+        return `Read file: ${input.file_path}`;
+      case 'Write':
+        return `Write to file: ${input.file_path}`;
+      case 'Edit':
+        return `Edit file: ${input.file_path}`;
+      case 'Glob':
+        return `Search files matching: ${input.pattern}`;
+      case 'Grep':
+        return `Search content matching: ${input.pattern}`;
+      default:
+        return `${toolName}: ${JSON.stringify(input)}`;
+    }
   }
 }

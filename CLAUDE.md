@@ -133,10 +133,20 @@ interface ClaudianSettings {
   showToolUse: boolean;          // Show file operations in chat
   model: ClaudeModel;            // Selected Claude model
   thinkingBudget: ThinkingBudget; // Extended thinking token budget
+  permissionMode: PermissionMode; // Yolo or Safe mode
+  approvedActions: ApprovedAction[]; // Permanently approved actions
 }
 
 type ClaudeModel = 'claude-haiku-4-5' | 'claude-sonnet-4-5' | 'claude-opus-4-5';
 type ThinkingBudget = 'off' | 'low' | 'medium' | 'high';
+type PermissionMode = 'yolo' | 'normal';
+
+interface ApprovedAction {
+  toolName: string;     // Tool name (Bash, Read, Write, etc.)
+  pattern: string;      // Command or file path pattern
+  approvedAt: number;   // Timestamp
+  scope: 'session' | 'always'; // Session-only or permanent
+}
 ```
 
 ## Model Selection
@@ -158,15 +168,36 @@ type ThinkingBudget = 'off' | 'low' | 'medium' | 'high';
 
 All models support extended thinking. When model is changed, thinking budget resets to model's default.
 
+## Permission Modes
+
+| Mode | Description |
+|------|-------------|
+| Yolo | Bypass permission prompts (default). Claude executes tools without approval. |
+| Safe | Require approval for tool usage. Shows approval dialog for each action. |
+
+### Security Restrictions (Both Modes)
+
+**Vault Restriction**: Agent can ONLY access files within the vault directory. Paths are normalized via `realpath` (symlink-safe) and Bash commands are scanned for path-like tokens; attempts to touch files outside the vault are blocked automatically.
+
+**Command Blocklist**: Dangerous bash commands are blocked even in Yolo mode.
+
+### Approval Memory
+
+When in Safe mode, actions can be approved with different scopes:
+- **Allow Once** - Approve for this execution only
+- **Always Allow** - Permanently approve (saved to settings)
+
+Matching rules:
+- Bash approvals require an exact command match.
+- File tools allow exact or prefix path matches.
+
+Permanently approved actions are stored and can be managed in Settings → Approved Actions.
+
 ## Default Blocked Commands
 
-- `rm -rf`
-- `rm -r /`
-- `chmod 777`
-- `chmod -R 777`
-- `mkfs`
-- `dd if=`
-- `> /dev/sd`
+- `rm -rf` - Recursive force delete (could wipe vault)
+- `chmod 777` - Unsafe file permissions
+- `chmod -R 777` - Recursive unsafe permissions
 
 ## File Outputs
 
@@ -252,6 +283,34 @@ All models support extended thinking. When model is changed, thinking budget res
 - `.claudian-mention-icon` - File icon in dropdown
 - `.claudian-mention-path` - File path text in dropdown
 - `.claudian-mention-empty` - "No matching files" message
+
+### Permission Mode Toggle
+- `.claudian-permission-toggle` - Container for toggle switch
+- `.claudian-permission-label` - Label showing "Yolo" or "Safe"
+- `.claudian-toggle-switch` - Toggle switch element
+- `.claudian-toggle-switch.active` - Active state (Yolo mode)
+
+### Approval Modal
+- `.claudian-approval-modal` - Modal container
+- `.claudian-approval-title` - Modal title
+- `.claudian-approval-info` - Tool info section
+- `.claudian-approval-tool` - Tool name with icon
+- `.claudian-approval-desc` - Action description
+- `.claudian-approval-details` - Collapsible details section
+- `.claudian-approval-code` - JSON input display
+- `.claudian-approval-buttons` - Button container
+- `.claudian-approval-btn` - Base button class
+- `.claudian-deny-btn` - Deny button
+- `.claudian-allow-btn` - Allow Once button
+- `.claudian-always-btn` - Always Allow button
+
+### Approved Actions (Settings)
+- `.claudian-approved-list` - List container
+- `.claudian-approved-item` - Individual action item
+- `.claudian-approved-item-tool` - Tool name badge
+- `.claudian-approved-item-pattern` - Pattern text
+- `.claudian-approved-item-date` - Approval date
+- `.claudian-approved-remove-btn` - Remove button
 
 ## Notes
 - when ask to generate a md file about the finding, implementation of your work, put the file in dev/

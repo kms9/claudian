@@ -1,6 +1,6 @@
 # Claudian
 
-An Obsidian plugin that embeds Claude Code as a sidebar chat interface. Your vault becomes Claude's working directory, giving it full agentic capabilities: file read/write, bash commands, and multi-step workflows.
+An Obsidian plugin that embeds Claude Agent as a sidebar chat interface. Your vault becomes Claude's working directory, giving it full agentic capabilities: file read/write, bash commands, and multi-step workflows.
 
 ## Features
 
@@ -15,7 +15,9 @@ An Obsidian plugin that embeds Claude Code as a sidebar chat interface. Your vau
 - **Tool call visualization**: Collapsible UI showing tool inputs and results (like Claude Code CLI)
 - **Chat history persistence**: Conversations saved across sessions with easy switching
 - **Session resume**: Continue previous conversations with full context
-- **Safety blocklist**: Optionally block dangerous commands
+- **Permission modes**: Yolo (no prompts) or Safe (per-action approval with memory)
+- **Safety blocklist**: Block dangerous commands even in Yolo mode
+- **Vault confinement**: All tools (including Bash paths) are restricted to the vault with symlink-safe checks
 - **Cancel streaming**: Press Escape to stop a response mid-stream
 
 ## Requirements
@@ -83,16 +85,22 @@ npm run build
 - **Enable command blocklist**: Block dangerous bash commands (default: on)
 - **Blocked commands**: Patterns to block (supports regex)
 - **Show tool usage**: Display file operations in chat
+- **Permission mode**: Toggle Yolo (bypass prompts) or Safe (require approval)
+- **Approved actions**: In Safe mode, manage permanently approved actions (Allow Once vs. Always Allow)
 
 ### Default blocklist
 
 - `rm -rf`
-- `rm -r /`
 - `chmod 777`
 - `chmod -R 777`
-- `mkfs`
-- `dd if=`
-- `> /dev/sd`
+
+### Safety and permissions
+
+- **Vault restriction**: File tools and Bash commands are limited to the Obsidian vault. Paths are resolved with `realpath` to prevent symlink escapes; attempts outside the vault are blocked.
+- **Approvals**:
+  - Safe mode shows an approval modal per tool call.
+  - Bash approvals require an exact command match.
+  - File tools allow exact or prefix path matches.
 
 ## Architecture
 
@@ -117,6 +125,7 @@ src/
 - [x] Extended thinking display (collapsible thinking blocks with live timer)
 - [x] Model selection (Haiku, Sonnet, Opus)
 - [x] Thinking token budget adjustment (Off/Low/Medium/High)
+- [x] Permission modes (Yolo/Safe)
 - [ ] Open files that Claude edits
 - [ ] Chat history export
 

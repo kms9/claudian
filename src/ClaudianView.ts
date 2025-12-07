@@ -1,6 +1,7 @@
-import { ItemView, WorkspaceLeaf, MarkdownRenderer, setIcon, TFile } from 'obsidian';
+import { ItemView, WorkspaceLeaf, MarkdownRenderer, setIcon, TFile, Modal } from 'obsidian';
 import type ClaudianPlugin from './main';
-import { VIEW_TYPE_CLAUDIAN, ChatMessage, StreamChunk, ToolCallInfo, ContentBlock, CLAUDE_MODELS, ClaudeModel, THINKING_BUDGETS, ThinkingBudget, DEFAULT_THINKING_BUDGET } from './types';
+import { VIEW_TYPE_CLAUDIAN, ChatMessage, StreamChunk, ToolCallInfo, ContentBlock, CLAUDE_MODELS, ClaudeModel, THINKING_BUDGETS, ThinkingBudget, DEFAULT_THINKING_BUDGET, PermissionMode } from './types';
+import type { ApprovalCallback } from './ClaudianService';
 
 export class ClaudianView extends ItemView {
   private plugin: ClaudianPlugin;
@@ -49,6 +50,10 @@ export class ClaudianView extends ItemView {
 
   // Thinking budget selector
   private thinkingBudgetEl: HTMLElement | null = null;
+
+  // Permission mode toggle
+  private permissionToggleEl: HTMLElement | null = null;
+  private permissionLabelEl: HTMLElement | null = null;
 
   private static readonly FLAVOR_TEXTS = [
     'Thinking...',
@@ -167,10 +172,11 @@ export class ClaudianView extends ItemView {
       },
     });
 
-    // Input toolbar (model selector + thinking budget)
+    // Input toolbar (model selector + thinking budget + permission toggle)
     const inputToolbar = inputWrapper.createDiv({ cls: 'claudian-input-toolbar' });
     this.createModelSelector(inputToolbar);
     this.createThinkingBudgetSelector(inputToolbar);
+    this.createPermissionToggle(inputToolbar);
 
     // Event handlers
     this.inputEl.addEventListener('keydown', (e) => {
@@ -231,6 +237,9 @@ export class ClaudianView extends ItemView {
       })
     );
 
+    // Set up approval callback for permission prompts
+    this.plugin.agentService.setApprovalCallback(this.handleApprovalRequest.bind(this));
+
     // Load active conversation or create new
     await this.loadActiveConversation();
   }
@@ -243,6 +252,8 @@ export class ClaudianView extends ItemView {
       clearInterval(this.thinkingTimerInterval);
       this.thinkingTimerInterval = null;
     }
+    // Remove approval callback
+    this.plugin.agentService.setApprovalCallback(null);
     // Save current conversation before closing
     await this.saveCurrentConversation();
   }
@@ -430,7 +441,8 @@ export class ClaudianView extends ItemView {
         if (this.plugin.settings.showToolUse) {
           const toolCall = msg.toolCalls?.find(tc => tc.id === chunk.id);
           if (toolCall) {
-            toolCall.status = chunk.isError ? 'error' : 'completed';
+            const isBlocked = this.isBlockedToolResult(chunk.content, chunk.isError);
+            toolCall.status = isBlocked ? 'blocked' : (chunk.isError ? 'error' : 'completed');
             toolCall.result = chunk.content;
             this.updateToolCallResult(chunk.id, toolCall);
           }
@@ -668,6 +680,8 @@ export class ClaudianView extends ItemView {
         setIcon(statusEl as HTMLElement, 'check');
       } else if (toolCall.status === 'error') {
         setIcon(statusEl as HTMLElement, 'x');
+      } else if (toolCall.status === 'blocked') {
+        setIcon(statusEl as HTMLElement, 'shield-off');
       }
     }
 
@@ -747,6 +761,17 @@ export class ClaudianView extends ItemView {
       return lines.slice(0, maxLines).join('\n') + `\n... (${lines.length - maxLines} more lines)`;
     }
     return result;
+  }
+
+  private isBlockedToolResult(content: string, isError?: boolean): boolean {
+    const lower = content.toLowerCase();
+    if (lower.includes('blocked by blocklist')) return true;
+    if (lower.includes('outside the vault')) return true;
+    if (lower.includes('access denied')) return true;
+    if (lower.includes('user denied')) return true;
+    if (lower.includes('approval')) return true;
+    if (isError && lower.includes('deny')) return true;
+    return false;
   }
 
   /**
@@ -952,6 +977,8 @@ export class ClaudianView extends ItemView {
       setIcon(statusEl, 'check');
     } else if (toolCall.status === 'error') {
       setIcon(statusEl, 'x');
+    } else if (toolCall.status === 'blocked') {
+      setIcon(statusEl, 'shield-off');
     }
 
     // Collapsible content
@@ -1558,7 +1585,161 @@ export class ClaudianView extends ItemView {
     this.updateThinkingBudgetDisplay();
   }
 
+  // ============================================
+  // Permission Mode Toggle Methods
+  // ============================================
+
+  private createPermissionToggle(parentEl: HTMLElement) {
+    const container = parentEl.createDiv({ cls: 'claudian-permission-toggle' });
+
+    // Label
+    this.permissionLabelEl = container.createSpan({ cls: 'claudian-permission-label' });
+
+    // Toggle switch
+    this.permissionToggleEl = container.createDiv({ cls: 'claudian-toggle-switch' });
+
+    // Update display
+    this.updatePermissionToggle();
+
+    // Toggle on click
+    this.permissionToggleEl.addEventListener('click', () => this.togglePermissionMode());
+  }
+
+  private updatePermissionToggle() {
+    if (!this.permissionToggleEl || !this.permissionLabelEl) return;
+
+    const isYolo = this.plugin.settings.permissionMode === 'yolo';
+
+    // Update toggle state
+    if (isYolo) {
+      this.permissionToggleEl.addClass('active');
+    } else {
+      this.permissionToggleEl.removeClass('active');
+    }
+
+    // Update label
+    this.permissionLabelEl.setText(isYolo ? 'Yolo' : 'Safe');
+  }
+
+  private async togglePermissionMode() {
+    const current = this.plugin.settings.permissionMode;
+    this.plugin.settings.permissionMode = current === 'yolo' ? 'normal' : 'yolo';
+    await this.plugin.saveSettings();
+    this.updatePermissionToggle();
+  }
+
   private generateId(): string {
     return `msg-${Date.now()}-${Math.random().toString(36).substring(2, 11)}`;
+  }
+
+  // ============================================
+  // Approval Dialog Methods
+  // ============================================
+
+  /**
+   * Handle approval request from the service
+   */
+  private async handleApprovalRequest(
+    toolName: string,
+    input: Record<string, unknown>,
+    description: string
+  ): Promise<'allow' | 'allow-always' | 'deny'> {
+    return new Promise((resolve) => {
+      const modal = new ApprovalModal(this.plugin.app, toolName, input, description, resolve);
+      modal.open();
+    });
+  }
+}
+
+/**
+ * Modal for approving tool actions
+ */
+class ApprovalModal extends Modal {
+  private toolName: string;
+  private input: Record<string, unknown>;
+  private description: string;
+  private resolve: (value: 'allow' | 'allow-always' | 'deny') => void;
+  private resolved = false;
+
+  constructor(
+    app: import('obsidian').App,
+    toolName: string,
+    input: Record<string, unknown>,
+    description: string,
+    resolve: (value: 'allow' | 'allow-always' | 'deny') => void
+  ) {
+    super(app);
+    this.toolName = toolName;
+    this.input = input;
+    this.description = description;
+    this.resolve = resolve;
+  }
+
+  onOpen() {
+    const { contentEl } = this;
+    contentEl.addClass('claudian-approval-modal');
+
+    // Title
+    contentEl.createEl('h2', { text: 'Permission Required', cls: 'claudian-approval-title' });
+
+    // Tool info
+    const infoEl = contentEl.createDiv({ cls: 'claudian-approval-info' });
+
+    const toolEl = infoEl.createDiv({ cls: 'claudian-approval-tool' });
+    const iconEl = toolEl.createSpan({ cls: 'claudian-approval-icon' });
+    setIcon(iconEl, this.getToolIcon(this.toolName));
+    toolEl.createSpan({ text: this.toolName, cls: 'claudian-approval-tool-name' });
+
+    // Description
+    const descEl = contentEl.createDiv({ cls: 'claudian-approval-desc' });
+    descEl.setText(this.description);
+
+    // Details (collapsible)
+    const detailsEl = contentEl.createEl('details', { cls: 'claudian-approval-details' });
+    detailsEl.createEl('summary', { text: 'Show details' });
+    const codeEl = detailsEl.createEl('pre', { cls: 'claudian-approval-code' });
+    codeEl.setText(JSON.stringify(this.input, null, 2));
+
+    // Buttons
+    const buttonsEl = contentEl.createDiv({ cls: 'claudian-approval-buttons' });
+
+    const denyBtn = buttonsEl.createEl('button', { text: 'Deny', cls: 'claudian-approval-btn claudian-deny-btn' });
+    denyBtn.addEventListener('click', () => this.handleDecision('deny'));
+
+    const allowBtn = buttonsEl.createEl('button', { text: 'Allow Once', cls: 'claudian-approval-btn claudian-allow-btn' });
+    allowBtn.addEventListener('click', () => this.handleDecision('allow'));
+
+    const alwaysBtn = buttonsEl.createEl('button', { text: 'Always Allow', cls: 'claudian-approval-btn claudian-always-btn' });
+    alwaysBtn.addEventListener('click', () => this.handleDecision('allow-always'));
+  }
+
+  private getToolIcon(toolName: string): string {
+    const iconMap: Record<string, string> = {
+      'Read': 'file-text',
+      'Write': 'edit-3',
+      'Edit': 'edit',
+      'Bash': 'terminal',
+      'Glob': 'folder-search',
+      'Grep': 'search',
+      'LS': 'list',
+    };
+    return iconMap[toolName] || 'wrench';
+  }
+
+  private handleDecision(decision: 'allow' | 'allow-always' | 'deny') {
+    if (!this.resolved) {
+      this.resolved = true;
+      this.resolve(decision);
+      this.close();
+    }
+  }
+
+  onClose() {
+    // If closed without decision, treat as deny
+    if (!this.resolved) {
+      this.resolved = true;
+      this.resolve('deny');
+    }
+    this.contentEl.empty();
   }
 }
