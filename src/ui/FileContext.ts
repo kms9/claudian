@@ -20,6 +20,7 @@ interface FileHashState {
 export interface FileContextCallbacks {
   getExcludedTags: () => string[];
   onFileOpen: (path: string) => Promise<void>;
+  onChipsChanged?: () => void;
 }
 
 /** Manages file context UI: attached files, edited files, and @ mention dropdown. */
@@ -357,6 +358,7 @@ export class FileContextManager {
     if (this.attachedFiles.size === 0) {
       this.fileIndicatorEl.style.display = 'none';
       this.updateEditedFilesIndicator();
+      this.callbacks.onChipsChanged?.();
       return;
     }
 
@@ -371,6 +373,7 @@ export class FileContextManager {
 
     // Keep edited files indicator in sync with attachment changes
     this.updateEditedFilesIndicator();
+    this.callbacks.onChipsChanged?.();
   }
 
   private renderFileChip(path: string, onRemove: () => void) {

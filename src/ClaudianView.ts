@@ -215,6 +215,7 @@ export class ClaudianView extends ItemView {
       {
         getExcludedTags: () => this.plugin.settings.excludedTags,
         onFileOpen: async () => {},
+        onChipsChanged: () => this.scrollToBottomIfNeeded(),
       }
     );
     this.plugin.agentService.setFileEditTracker(this.fileContextManager);
@@ -224,7 +225,7 @@ export class ClaudianView extends ItemView {
       inputContainerEl,
       this.inputEl,
       {
-        onImagesChanged: () => {},
+        onImagesChanged: () => this.scrollToBottomIfNeeded(),
         getMediaFolder: () => this.plugin.settings.mediaFolder,
       }
     );
@@ -718,6 +719,19 @@ export class ClaudianView extends ItemView {
     this.hideThinkingIndicator();
   }
 
+  /** Scrolls to bottom if already near bottom (within 100px threshold). */
+  private scrollToBottomIfNeeded() {
+    if (!this.messagesEl) return;
+    const { scrollTop, scrollHeight, clientHeight } = this.messagesEl;
+    const isNearBottom = scrollHeight - scrollTop - clientHeight < 100;
+    if (isNearBottom) {
+      // Use requestAnimationFrame to ensure layout has updated
+      requestAnimationFrame(() => {
+        this.messagesEl.scrollTop = this.messagesEl.scrollHeight;
+      });
+    }
+  }
+
   private async handleStreamChunk(chunk: StreamChunk, msg: ChatMessage) {
     if ('parentToolUseId' in chunk && chunk.parentToolUseId) {
       await this.handleSubagentChunk(chunk, msg);
@@ -1154,6 +1168,18 @@ export class ClaudianView extends ItemView {
       this.renderMessageImages(this.messagesEl, msg.images);
     }
 
+    // For user messages, check if there's text content to show
+    if (msg.role === 'user') {
+      const textToShow = msg.displayContent ?? msg.content;
+      // Skip creating empty bubble for image-only messages
+      if (!textToShow) {
+        this.messagesEl.scrollTop = this.messagesEl.scrollHeight;
+        // Return the images container or create a placeholder
+        const lastChild = this.messagesEl.lastElementChild as HTMLElement;
+        return lastChild ?? this.messagesEl;
+      }
+    }
+
     const msgEl = this.messagesEl.createDiv({
       cls: `claudian-message claudian-message-${msg.role}`,
     });
@@ -1161,7 +1187,6 @@ export class ClaudianView extends ItemView {
     const contentEl = msgEl.createDiv({ cls: 'claudian-message-content' });
 
     if (msg.role === 'user') {
-      // Use displayContent for UI (e.g., "/tests"), fall back to content
       const textToShow = msg.displayContent ?? msg.content;
       if (textToShow) {
         const textEl = contentEl.createDiv({ cls: 'claudian-text-block' });
@@ -1394,6 +1419,14 @@ export class ClaudianView extends ItemView {
     // For user messages with images, render images above the bubble
     if (msg.role === 'user' && msg.images && msg.images.length > 0) {
       this.renderMessageImages(this.messagesEl, msg.images);
+    }
+
+    // For user messages, skip creating empty bubble for image-only messages
+    if (msg.role === 'user') {
+      const textToShow = msg.displayContent ?? msg.content;
+      if (!textToShow) {
+        return;
+      }
     }
 
     const msgEl = this.messagesEl.createDiv({

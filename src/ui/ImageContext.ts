@@ -71,6 +71,7 @@ export class ImageContextManager {
   clearImages() {
     this.attachedImages.clear();
     this.updateImagePreview();
+    this.callbacks.onImagesChanged();
   }
 
   /** Sets images directly (used for queued messages). */
@@ -80,6 +81,7 @@ export class ImageContextManager {
       this.attachedImages.set(image.id, image);
     }
     this.updateImagePreview();
+    this.callbacks.onImagesChanged();
   }
 
   /** Adds an image from a file path. Returns true if successful. */
