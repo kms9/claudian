@@ -62,7 +62,6 @@ export class PlanApprovalPanel {
   // Input area references (for hiding/showing)
   private inputContainer: HTMLElement | null = null;
   private inputWrapper: HTMLElement | null = null;
-  private thinkingEl: HTMLElement | null = null;
 
   constructor(_app: App, options: PlanApprovalPanelOptions) {
     this.containerEl = options.containerEl;
@@ -80,11 +79,8 @@ export class PlanApprovalPanel {
       this.inputWrapper.style.display = 'none';
     }
 
-    // Hide thinking indicator (flavor text)
-    this.thinkingEl = this.containerEl.querySelector('.claudian-thinking') as HTMLElement | null;
-    if (this.thinkingEl) {
-      this.thinkingEl.style.display = 'none';
-    }
+    // Note: The thinking indicator is now properly removed by InputController
+    // before showing this panel, so we don't need to handle it here.
 
     // Create panel and insert it where the input wrapper was
     this.panelEl = this.createPanel();
@@ -374,10 +370,11 @@ export class PlanApprovalPanel {
       this.inputWrapper.style.display = '';
     }
 
-    // Restore thinking indicator visibility (if still present)
-    if (this.thinkingEl) {
-      this.thinkingEl.style.display = '';
-    }
+    // Note: Do NOT restore the thinking indicator visibility here.
+    // The thinking indicator from the plan generation stream is in the original
+    // assistant message (above the plan message). Restoring it would cause it to
+    // appear above the plan. When the stream continues (for revision) or a new
+    // message is sent (for approve), showThinkingIndicator() will handle it correctly.
   }
 }
 

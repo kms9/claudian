@@ -72,6 +72,8 @@ export interface Conversation {
   approvedPlan?: string;
   /** Pending plan content awaiting user approval. */
   pendingPlanContent?: string;
+  /** Whether this conversation is currently in plan mode (agent exploring/generating plan). */
+  isInPlanMode?: boolean;
   /** Status of AI title generation. */
   titleGenerationStatus?: 'pending' | 'success' | 'failed';
 }

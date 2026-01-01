@@ -49,6 +49,8 @@ export interface ConversationControllerDeps {
   triggerPendingPlanApproval: (content: string) => void;
   /** Get title generation service. */
   getTitleGenerationService: () => TitleGenerationService | null;
+  /** Set plan mode active state (updates UI toggle and file context). */
+  setPlanModeActive: (active: boolean) => void;
 }
 
 /**
@@ -89,10 +91,12 @@ export class ConversationController {
     state.clearMessages();
     state.usage = null;
 
-    // Clear approved plan and pending plan for new conversation
+    // Clear approved plan, pending plan, and plan mode for new conversation
     this.deps.setApprovedPlan(null);
     this.deps.hidePlanBanner();
     state.pendingPlanContent = null;
+    state.resetPlanModeState();
+    this.deps.setPlanModeActive(false);
 
     const messagesEl = this.deps.getMessagesEl();
     messagesEl.empty();
@@ -143,6 +147,20 @@ export class ConversationController {
 
     // Restore pending plan content
     state.pendingPlanContent = conversation.pendingPlanContent ?? null;
+
+    // Restore plan mode state if conversation was in plan mode
+    if (conversation.isInPlanMode) {
+      state.planModeState = {
+        isActive: true,
+        planFilePath: null,
+        planContent: null,
+        originalQuery: null,
+      };
+      this.deps.setPlanModeActive(true);
+    } else {
+      state.resetPlanModeState();
+      this.deps.setPlanModeActive(false);
+    }
 
     const hasMessages = state.messages.length > 0;
     const fileCtx = this.deps.getFileContextManager();
@@ -200,6 +218,20 @@ export class ConversationController {
     // Restore pending plan content
     state.pendingPlanContent = conversation.pendingPlanContent ?? null;
 
+    // Restore plan mode state if conversation was in plan mode
+    if (conversation.isInPlanMode) {
+      state.planModeState = {
+        isActive: true,
+        planFilePath: null,
+        planContent: null,
+        originalQuery: null,
+      };
+      this.deps.setPlanModeActive(true);
+    } else {
+      state.resetPlanModeState();
+      this.deps.setPlanModeActive(false);
+    }
+
     this.deps.getInputEl().value = '';
     this.deps.clearQueuedMessage();
 
@@ -244,6 +276,7 @@ export class ConversationController {
       usage: state.usage ?? undefined,
       approvedPlan: approvedPlan ?? undefined,
       pendingPlanContent: state.pendingPlanContent ?? undefined,
+      isInPlanMode: state.planModeState?.isActive ?? undefined,
     };
 
     if (updateLastResponse) {

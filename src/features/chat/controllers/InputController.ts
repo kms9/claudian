@@ -861,7 +861,7 @@ ${content}
     toolName: string,
     input: Record<string, unknown>,
     description: string
-  ): Promise<'allow' | 'allow-always' | 'deny'> {
+  ): Promise<'allow' | 'allow-always' | 'deny' | 'cancel'> {
     const { plugin } = this.deps;
     return new Promise((resolve) => {
       const modal = new ApprovalModal(plugin.app, toolName, input, description, resolve);
@@ -906,7 +906,7 @@ ${content}
 
   /** Handles ExitPlanMode tool by showing plan approval panel. */
   async handleExitPlanMode(planContent: string): Promise<ExitPlanModeDecision> {
-    const { state, renderer, conversationController } = this.deps;
+    const { state, renderer, conversationController, streamController } = this.deps;
 
     // Get the container element (the claudian view container)
     const messagesEl = this.deps.getMessagesEl();
@@ -919,6 +919,11 @@ ${content}
     if (state.planModeState) {
       state.planModeState.planContent = planContent;
     }
+
+    // Hide the thinking indicator from the original (empty) assistant message
+    // before adding the plan message. This prevents it from appearing above
+    // the plan when revision is selected.
+    streamController.hideThinkingIndicator();
 
     // Add plan as a chat message with distinct styling
     const planMsg: ChatMessage = {
@@ -938,6 +943,10 @@ ${content}
       if (contentEl) {
         const textEl = contentEl.createDiv({ cls: 'claudian-text-block' });
         await renderer.renderContent(textEl, planContent);
+        // Update currentContentEl to point to the plan message's content.
+        // This ensures that if revision is selected and the stream continues,
+        // new content (including thinking indicator) will appear below the plan.
+        state.currentContentEl = contentEl;
       }
     }
 

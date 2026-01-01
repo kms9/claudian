@@ -37,6 +37,7 @@ interface SessionMetaRecord {
   usage?: UsageInfo;
   approvedPlan?: string;
   pendingPlanContent?: string;
+  isInPlanMode?: boolean;
   titleGenerationStatus?: 'pending' | 'success' | 'failed';
 }
 
@@ -235,6 +236,7 @@ export class SessionStorage {
       usage: meta.usage,
       approvedPlan: meta.approvedPlan,
       pendingPlanContent: meta.pendingPlanContent,
+      isInPlanMode: meta.isInPlanMode,
       titleGenerationStatus: meta.titleGenerationStatus,
     };
   }
@@ -256,6 +258,7 @@ export class SessionStorage {
       usage: conversation.usage,
       approvedPlan: conversation.approvedPlan,
       pendingPlanContent: conversation.pendingPlanContent,
+      isInPlanMode: conversation.isInPlanMode,
       titleGenerationStatus: conversation.titleGenerationStatus,
     };
     lines.push(JSON.stringify(meta));

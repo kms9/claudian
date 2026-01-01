@@ -405,6 +405,10 @@ export class ClaudianView extends ItemView {
         hidePlanBanner: () => this.planBanner?.hide(),
         triggerPendingPlanApproval: (content) => this.inputController?.restorePendingPlanApproval(content),
         getTitleGenerationService: () => this.titleGenerationService,
+        setPlanModeActive: (active) => {
+          this.permissionToggle?.setPlanModeActive(active);
+          this.fileContextManager?.setPlanModeActive(active);
+        },
       },
       {}
     );

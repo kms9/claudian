@@ -7,7 +7,7 @@ import { Modal, setIcon } from 'obsidian';
 
 import { getToolIcon } from '../../core/tools/toolIcons';
 
-export type ApprovalDecision = 'allow' | 'allow-always' | 'deny';
+export type ApprovalDecision = 'allow' | 'allow-always' | 'deny' | 'cancel';
 
 export interface ApprovalModalOptions {
   showAlwaysAllow?: boolean;
@@ -163,7 +163,8 @@ export class ApprovalModal extends Modal {
     this.detachDocumentHandler();
     if (!this.resolved) {
       this.resolved = true;
-      this.resolve('deny');
+      // User pressed Escape or clicked outside - cancel/interrupt
+      this.resolve('cancel');
     }
     this.contentEl.empty();
   }

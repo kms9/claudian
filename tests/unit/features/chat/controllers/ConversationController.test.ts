@@ -125,6 +125,7 @@ function createMockDeps(overrides: Partial<ConversationControllerDeps> = {}): Co
     hidePlanBanner: jest.fn(),
     triggerPendingPlanApproval: jest.fn(),
     getTitleGenerationService: () => null,
+    setPlanModeActive: jest.fn(),
     ...overrides,
   };
 }

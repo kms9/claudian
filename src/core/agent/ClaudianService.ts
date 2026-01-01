@@ -169,7 +169,7 @@ export type ApprovalCallback = (
   toolName: string,
   input: Record<string, unknown>,
   description: string
-) => Promise<'allow' | 'allow-always' | 'deny'>;
+) => Promise<'allow' | 'allow-always' | 'deny' | 'cancel'>;
 
 export interface FileEditTracker {
   markFileBeingEdited(toolName: string, toolInput: Record<string, unknown>): Promise<void>;
@@ -733,10 +733,11 @@ export class ClaudianService {
       const answers = await this.askUserQuestionCallback(input as unknown as AskUserQuestionInput);
 
       if (answers === null) {
+        // User pressed Escape - interrupt the stream like in Claude Code
         return {
           behavior: 'deny',
-          message: 'User cancelled the question.',
-          interrupt: false,
+          message: 'User interrupted.',
+          interrupt: true,
         };
       }
 
@@ -918,7 +919,18 @@ export class ClaudianService {
     try {
       const decision = await this.approvalCallback(toolName, input, description);
 
+      if (decision === 'cancel') {
+        // User pressed Escape - interrupt the stream like in Claude Code
+        this.fileEditTracker?.cancelFileEdit(toolName, input);
+        return {
+          behavior: 'deny',
+          message: 'User interrupted.',
+          interrupt: true,
+        };
+      }
+
       if (decision === 'deny') {
+        // User explicitly clicked Deny button - continue with denial
         this.fileEditTracker?.cancelFileEdit(toolName, input);
         return {
           behavior: 'deny',
