@@ -558,6 +558,11 @@ export class ClaudianView extends ItemView {
 
     // Input events
     this.inputEl!.addEventListener('keydown', (e) => {
+      // Check for # trigger first (empty input + # keystroke)
+      if (this.instructionModeManager?.handleTriggerKey(e)) {
+        return;
+      }
+
       if (this.instructionModeManager?.handleKeydown(e)) {
         return;
       }

@@ -16,49 +16,72 @@ function createKeyEvent(key: string, options: { shiftKey?: boolean } = {}) {
 }
 
 describe('InstructionModeManager', () => {
-  it('should enter instruction mode on "#" and update placeholder/indicator', () => {
+  it('should enter instruction mode on # keystroke when input is empty', () => {
     const wrapper = createWrapper();
-    const inputEl = { value: '#', placeholder: 'Ask...' } as any;
+    const inputEl = { value: '', placeholder: 'Ask...' } as any;
     const callbacks = {
       onSubmit: jest.fn().mockResolvedValue(undefined),
       getInputWrapper: () => wrapper,
     };
 
     const manager = new InstructionModeManager(inputEl, callbacks);
-    manager.handleInputChange();
+    const e = createKeyEvent('#');
+    const handled = manager.handleTriggerKey(e);
 
+    expect(handled).toBe(true);
+    expect(e.preventDefault).toHaveBeenCalled();
     expect(manager.isActive()).toBe(true);
-    expect(inputEl.value).toBe('');
     expect(inputEl.placeholder).toBe('# Save in custom system prompt');
     expect(wrapper.addClass).toHaveBeenCalledWith('claudian-input-instruction-mode');
   });
 
-  it('should enter instruction mode on "# " and strip the prefix', () => {
+  it('should NOT enter instruction mode on # keystroke when input has content', () => {
     const wrapper = createWrapper();
-    const inputEl = { value: '# hello', placeholder: 'Ask...' } as any;
+    const inputEl = { value: 'hello', placeholder: 'Ask...' } as any;
     const callbacks = {
       onSubmit: jest.fn().mockResolvedValue(undefined),
       getInputWrapper: () => wrapper,
     };
 
     const manager = new InstructionModeManager(inputEl, callbacks);
+    const e = createKeyEvent('#');
+    const handled = manager.handleTriggerKey(e);
+
+    expect(handled).toBe(false);
+    expect(e.preventDefault).not.toHaveBeenCalled();
+    expect(manager.isActive()).toBe(false);
+    expect(wrapper.addClass).not.toHaveBeenCalled();
+  });
+
+  it('should NOT enter instruction mode when pasting "# hello"', () => {
+    const wrapper = createWrapper();
+    const inputEl = { value: '', placeholder: 'Ask...' } as any;
+    const callbacks = {
+      onSubmit: jest.fn().mockResolvedValue(undefined),
+      getInputWrapper: () => wrapper,
+    };
+
+    const manager = new InstructionModeManager(inputEl, callbacks);
+
+    // Simulate paste - no keystroke, just input change
+    inputEl.value = '# hello';
     manager.handleInputChange();
 
-    expect(manager.isActive()).toBe(true);
-    expect(inputEl.value).toBe('hello');
-    expect(manager.getRawInstruction()).toBe('hello');
+    expect(manager.isActive()).toBe(false);
+    expect(wrapper.addClass).not.toHaveBeenCalled();
   });
 
   it('should exit instruction mode when input is cleared', () => {
     const wrapper = createWrapper();
-    const inputEl = { value: '#', placeholder: 'Ask...' } as any;
+    const inputEl = { value: '', placeholder: 'Ask...' } as any;
     const callbacks = {
       onSubmit: jest.fn().mockResolvedValue(undefined),
       getInputWrapper: () => wrapper,
     };
 
     const manager = new InstructionModeManager(inputEl, callbacks);
-    manager.handleInputChange();
+    manager.handleTriggerKey(createKeyEvent('#'));
+    expect(manager.isActive()).toBe(true);
 
     inputEl.value = '';
     manager.handleInputChange();
@@ -70,14 +93,15 @@ describe('InstructionModeManager', () => {
 
   it('should submit instruction on Enter (without Shift) and trim whitespace', async () => {
     const wrapper = createWrapper();
-    const inputEl = { value: '#', placeholder: 'Ask...' } as any;
+    const inputEl = { value: '', placeholder: 'Ask...' } as any;
     const callbacks = {
       onSubmit: jest.fn().mockResolvedValue(undefined),
       getInputWrapper: () => wrapper,
     };
 
     const manager = new InstructionModeManager(inputEl, callbacks);
-    manager.handleInputChange();
+    manager.handleTriggerKey(createKeyEvent('#'));
+
     inputEl.value = '  test  ';
     manager.handleInputChange();
 
@@ -91,14 +115,14 @@ describe('InstructionModeManager', () => {
 
   it('should not handle Enter when instruction is empty', () => {
     const wrapper = createWrapper();
-    const inputEl = { value: '#', placeholder: 'Ask...' } as any;
+    const inputEl = { value: '', placeholder: 'Ask...' } as any;
     const callbacks = {
       onSubmit: jest.fn().mockResolvedValue(undefined),
       getInputWrapper: () => wrapper,
     };
 
     const manager = new InstructionModeManager(inputEl, callbacks);
-    manager.handleInputChange();
+    manager.handleTriggerKey(createKeyEvent('#'));
 
     inputEl.value = '   ';
     manager.handleInputChange();
@@ -113,15 +137,18 @@ describe('InstructionModeManager', () => {
 
   it('should cancel on Escape and clear input', () => {
     const wrapper = createWrapper();
-    const inputEl = { value: '# hello', placeholder: 'Ask...' } as any;
+    const inputEl = { value: '', placeholder: 'Ask...' } as any;
     const callbacks = {
       onSubmit: jest.fn().mockResolvedValue(undefined),
       getInputWrapper: () => wrapper,
     };
 
     const manager = new InstructionModeManager(inputEl, callbacks);
-    manager.handleInputChange();
+    manager.handleTriggerKey(createKeyEvent('#'));
     expect(manager.isActive()).toBe(true);
+
+    inputEl.value = 'hello';
+    manager.handleInputChange();
 
     const e = createKeyEvent('Escape');
     const handled = manager.handleKeydown(e);

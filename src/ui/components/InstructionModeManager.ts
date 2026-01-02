@@ -36,40 +36,57 @@ export class InstructionModeManager {
     this.originalPlaceholder = inputEl.placeholder;
   }
 
-  /** Handles input changes to detect # trigger. */
-  handleInputChange(): void {
-    const text = this.inputEl.value;
+  /**
+   * Handles keydown to detect # trigger.
+   * Returns true if the event was consumed (should prevent default).
+   */
+  handleTriggerKey(e: KeyboardEvent): boolean {
+    // Only trigger on # keystroke when input is empty and not already in mode
+    if (!this.state.active && this.inputEl.value === '' && e.key === '#') {
+      if (this.enterMode()) {
+        e.preventDefault();
+        return true;
+      }
+    }
+    return false;
+  }
 
-    if (this.state.active) {
-      // Already in instruction mode - track the instruction text
-      // Exit if input is cleared completely
-      if (text === '') {
-        this.exitMode();
-      } else {
-        this.state.rawInstruction = text;
-      }
+  /** Handles input changes to track instruction text. */
+  handleInputChange(): void {
+    if (!this.state.active) return;
+
+    const text = this.inputEl.value;
+    if (text === '') {
+      this.exitMode();
     } else {
-      // Not in instruction mode - check for # trigger
-      // Detect # at start (with or without space after)
-      if (text === '#' || text.startsWith('# ')) {
-        this.enterMode(text.startsWith('# ') ? text.substring(2) : '');
-      }
+      this.state.rawInstruction = text;
     }
   }
 
-  /** Enters instruction mode, removing # from input. */
-  private enterMode(initialText: string = ''): void {
-    this.state = { active: true, rawInstruction: initialText };
-    this.inputEl.value = initialText;
+  /**
+   * Enters instruction mode.
+   * Only enters if the indicator can be successfully shown.
+   * Returns true if mode was entered, false otherwise.
+   */
+  private enterMode(): boolean {
+    // Indicator is single source of truth - only enter mode if we can show it
+    const wrapper = this.callbacks.getInputWrapper();
+    if (!wrapper) return false;
+
+    wrapper.addClass('claudian-input-instruction-mode');
+    this.state = { active: true, rawInstruction: '' };
     this.inputEl.placeholder = INSTRUCTION_MODE_PLACEHOLDER;
-    this.updateIndicator();
+    return true;
   }
 
   /** Exits instruction mode, restoring original state. */
   private exitMode(): void {
+    const wrapper = this.callbacks.getInputWrapper();
+    if (wrapper) {
+      wrapper.removeClass('claudian-input-instruction-mode');
+    }
     this.state = { active: false, rawInstruction: '' };
     this.inputEl.placeholder = this.originalPlaceholder;
-    this.updateIndicator();
   }
 
   /** Handles keydown events. Returns true if handled. */
@@ -132,18 +149,6 @@ export class InstructionModeManager {
   clear(): void {
     this.inputEl.value = '';
     this.exitMode();
-  }
-
-  /** Updates the visual indicator (light blue border). */
-  private updateIndicator(): void {
-    const wrapper = this.callbacks.getInputWrapper();
-    if (!wrapper) return;
-
-    if (this.state.active) {
-      wrapper.addClass('claudian-input-instruction-mode');
-    } else {
-      wrapper.removeClass('claudian-input-instruction-mode');
-    }
   }
 
   /** Cleans up event listeners. */
