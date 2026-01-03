@@ -239,15 +239,23 @@ export function findClaudeCLIPath(): string | null {
     return null;
   }
 
-  // Platform-specific search paths for native binaries
+  // Platform-specific search paths for native binaries and npm symlinks
   const commonPaths: string[] = [
-    // Unix/macOS paths
+    // Native binary paths (preferred)
     path.join(homeDir, '.claude', 'local', 'claude'),
     path.join(homeDir, '.local', 'bin', 'claude'),
     '/usr/local/bin/claude',
     '/opt/homebrew/bin/claude',
     path.join(homeDir, 'bin', 'claude'),
+    // npm global bin symlinks (created by npm install -g)
+    path.join(homeDir, '.npm-global', 'bin', 'claude'),
   ];
+
+  // Also check npm prefix bin directory
+  const npmPrefix = getNpmGlobalPrefix();
+  if (npmPrefix) {
+    commonPaths.push(path.join(npmPrefix, 'bin', 'claude'));
+  }
 
   for (const p of commonPaths) {
     if (fs.existsSync(p)) {
