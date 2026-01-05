@@ -440,6 +440,10 @@ describe('getEnhancedPath', () => {
 });
 
 describe('cliPathRequiresNode', () => {
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
   it('returns true for .js files', () => {
     expect(cliPathRequiresNode('/path/to/cli.js')).toBe(true);
     expect(cliPathRequiresNode('C:\\path\\to\\cli.js')).toBe(true);
@@ -457,6 +461,24 @@ describe('cliPathRequiresNode', () => {
     expect(cliPathRequiresNode('/path/to/claude')).toBe(false);
     expect(cliPathRequiresNode('/path/to/claude.exe')).toBe(false);
     expect(cliPathRequiresNode('C:\\path\\to\\claude.exe')).toBe(false);
+  });
+
+  it('returns true for scripts with node shebang', () => {
+    const scriptPath = isWindows ? 'C:\\temp\\claude' : '/tmp/claude';
+    const shebang = '#!/usr/bin/env node\nconsole.log("hi");\n';
+
+    jest.spyOn(fs, 'existsSync').mockImplementation(p => String(p) === scriptPath);
+    jest.spyOn(fs, 'statSync').mockImplementation(
+      p => ({ isFile: () => String(p) === scriptPath }) as fs.Stats
+    );
+    jest.spyOn(fs, 'openSync').mockImplementation(() => 1 as any);
+    jest.spyOn(fs, 'readSync').mockImplementation((_, buffer: Buffer) => {
+      buffer.write(shebang);
+      return shebang.length;
+    });
+    jest.spyOn(fs, 'closeSync').mockImplementation(() => {});
+
+    expect(cliPathRequiresNode(scriptPath)).toBe(true);
   });
 
   it('returns false for .cmd files', () => {

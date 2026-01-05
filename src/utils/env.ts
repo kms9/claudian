@@ -7,6 +7,8 @@
 import * as fs from 'fs';
 import * as path from 'path';
 
+import { parsePathEntries } from './path';
+
 const isWindows = process.platform === 'win32';
 const PATH_SEPARATOR = isWindows ? ';' : ':';
 const NODE_EXECUTABLE = isWindows ? 'node.exe' : 'node';
@@ -120,9 +122,34 @@ function getExtraBinaryPaths(): string[] {
       '/bin',
     ];
 
+    const voltaHome = process.env.VOLTA_HOME;
+    if (voltaHome) {
+      paths.push(path.join(voltaHome, 'bin'));
+    }
+
+    const asdfRoot = process.env.ASDF_DATA_DIR || process.env.ASDF_DIR;
+    if (asdfRoot) {
+      paths.push(path.join(asdfRoot, 'shims'));
+      paths.push(path.join(asdfRoot, 'bin'));
+    }
+
+    const fnmMultishell = process.env.FNM_MULTISHELL_PATH;
+    if (fnmMultishell) {
+      paths.push(fnmMultishell);
+    }
+
+    const fnmDir = process.env.FNM_DIR;
+    if (fnmDir) {
+      paths.push(fnmDir);
+    }
+
     if (home) {
       paths.push(path.join(home, '.local', 'bin'));
       paths.push(path.join(home, '.docker', 'bin'));
+      paths.push(path.join(home, '.volta', 'bin'));
+      paths.push(path.join(home, '.asdf', 'shims'));
+      paths.push(path.join(home, '.asdf', 'bin'));
+      paths.push(path.join(home, '.fnm'));
 
       // NVM: use NVM_BIN if set, otherwise skip (NVM_BIN points to actual bin)
       const nvmBin = process.env.NVM_BIN;
@@ -144,7 +171,7 @@ export function findNodeDirectory(): string | null {
 
   // Also check current PATH
   const currentPath = process.env.PATH || '';
-  const pathDirs = currentPath.split(PATH_SEPARATOR).filter(p => p);
+  const pathDirs = parsePathEntries(currentPath);
 
   // Search in extra paths first (more likely to have node), then current PATH
   const allPaths = [...searchPaths, ...pathDirs];
@@ -172,7 +199,40 @@ export function findNodeDirectory(): string | null {
  */
 export function cliPathRequiresNode(cliPath: string): boolean {
   const jsExtensions = ['.js', '.mjs', '.cjs', '.ts', '.tsx', '.jsx'];
-  return jsExtensions.some(ext => cliPath.toLowerCase().endsWith(ext));
+  const lower = cliPath.toLowerCase();
+  if (jsExtensions.some(ext => lower.endsWith(ext))) {
+    return true;
+  }
+
+  try {
+    if (!fs.existsSync(cliPath)) {
+      return false;
+    }
+
+    const stat = fs.statSync(cliPath);
+    if (!stat.isFile()) {
+      return false;
+    }
+
+    let fd: number | null = null;
+    try {
+      fd = fs.openSync(cliPath, 'r');
+      const buffer = Buffer.alloc(200);
+      const bytesRead = fs.readSync(fd, buffer, 0, buffer.length, 0);
+      const header = buffer.slice(0, bytesRead).toString('utf8');
+      return header.startsWith('#!') && header.toLowerCase().includes('node');
+    } finally {
+      if (fd !== null) {
+        try {
+          fs.closeSync(fd);
+        } catch {
+          // Ignore close errors
+        }
+      }
+    }
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -195,7 +255,7 @@ export function getEnhancedPath(additionalPaths?: string, cliPath?: string): str
 
   // Add user-specified paths first (highest priority)
   if (additionalPaths) {
-    segments.push(...additionalPaths.split(PATH_SEPARATOR).filter(p => p));
+    segments.push(...parsePathEntries(additionalPaths));
   }
 
   // If CLI path is provided, check if its directory contains node executable.
@@ -232,7 +292,7 @@ export function getEnhancedPath(additionalPaths?: string, cliPath?: string): str
 
   // Add current PATH
   if (currentPath) {
-    segments.push(...currentPath.split(PATH_SEPARATOR).filter(p => p));
+    segments.push(...parsePathEntries(currentPath));
   }
 
   // Deduplicate while preserving order

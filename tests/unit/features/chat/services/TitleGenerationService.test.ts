@@ -10,11 +10,6 @@ import {
 } from '@test/__mocks__/claude-agent-sdk';
 
 import { type TitleGenerationResult, TitleGenerationService } from '@/features/chat/services/TitleGenerationService';
-import * as pathUtils from '@/utils/path';
-
-// Mock findClaudeCLIPath for controlled testing
-jest.spyOn(pathUtils, 'findClaudeCLIPath');
-
 function createMockPlugin(settings = {}) {
   return {
     settings: {
@@ -31,6 +26,7 @@ function createMockPlugin(settings = {}) {
       },
     },
     getActiveEnvironmentVariables: jest.fn().mockReturnValue(''),
+    getResolvedClaudeCliPath: jest.fn().mockReturnValue('/fake/claude'),
   } as any;
 }
 
@@ -43,7 +39,6 @@ describe('TitleGenerationService', () => {
     resetMockMessages();
     mockPlugin = createMockPlugin();
     service = new TitleGenerationService(mockPlugin);
-    (service as any).resolvedClaudePath = '/fake/claude';
   });
 
   describe('generateTitle', () => {
@@ -279,8 +274,7 @@ describe('TitleGenerationService', () => {
     });
 
     it('should fail when Claude CLI is not found', async () => {
-      (service as any).resolvedClaudePath = null;
-      (pathUtils.findClaudeCLIPath as jest.Mock).mockReturnValue(null);
+      mockPlugin.getResolvedClaudeCliPath.mockReturnValue(null);
 
       const callback = jest.fn();
       await service.generateTitle('conv-123', 'test', 'response', callback);

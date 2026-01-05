@@ -7,7 +7,6 @@
 
 import type { CanUseTool, Options, PermissionResult } from '@anthropic-ai/claude-agent-sdk';
 import { query as agentQuery } from '@anthropic-ai/claude-agent-sdk';
-import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 
@@ -15,8 +14,6 @@ import type ClaudianPlugin from '../../main';
 import { stripCurrentNotePrefix } from '../../utils/context';
 import { getEnhancedPath, parseEnvironmentVariables } from '../../utils/env';
 import {
-  expandHomePath,
-  findClaudeCLIPath,
   getPathAccessType,
   getVaultPath,
   normalizePathForFilesystem,
@@ -207,7 +204,6 @@ export type EnterPlanModeCallback = () => Promise<void>;
 export class ClaudianService {
   private plugin: ClaudianPlugin;
   private abortController: AbortController | null = null;
-  private resolvedClaudePath: string | null = null;
   private approvalCallback: ApprovalCallback | null = null;
   private askUserQuestionCallback: AskUserQuestionCallback | null = null;
   private exitPlanModeCallback: ExitPlanModeCallback | null = null;
@@ -251,32 +247,6 @@ export class ClaudianService {
     await this.mcpManager.loadServers();
   }
 
-  private findClaudeCLI(): string | null {
-    // Check for user-specified custom path first
-    const customPath = this.plugin.settings.claudeCliPath?.trim();
-    if (customPath) {
-      const expandedPath = expandHomePath(customPath);
-      if (fs.existsSync(expandedPath)) {
-        // Validate that the path is a file, not a directory
-        try {
-          const stat = fs.statSync(expandedPath);
-          if (stat.isFile()) {
-            return expandedPath;
-          }
-          console.warn(`Claudian: Custom CLI path is a directory, not a file: ${expandedPath}`);
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          console.warn(`Claudian: Custom CLI path not accessible: ${expandedPath} (${message})`);
-        }
-      } else {
-        console.warn(`Claudian: Custom CLI path not found: ${expandedPath}`);
-      }
-      // Continue to auto-detection if custom path is invalid
-    }
-    const customEnv = parseEnvironmentVariables(this.plugin.getActiveEnvironmentVariables());
-    return findClaudeCLIPath(customEnv.PATH);
-  }
-
   /** Sends a query to Claude and streams the response. */
   async *query(
     prompt: string,
@@ -290,11 +260,8 @@ export class ClaudianService {
       return;
     }
 
-    if (!this.resolvedClaudePath) {
-      this.resolvedClaudePath = this.findClaudeCLI();
-    }
-
-    if (!this.resolvedClaudePath) {
+    const resolvedClaudePath = this.plugin.getResolvedClaudeCliPath();
+    if (!resolvedClaudePath) {
       yield { type: 'error', content: 'Claude CLI not found. Please install Claude Code CLI.' };
       return;
     }
@@ -338,7 +305,7 @@ export class ClaudianService {
     }
 
     try {
-      yield* this.queryViaSDK(queryPrompt, vaultPath, hydratedImages, queryOptions);
+      yield* this.queryViaSDK(queryPrompt, vaultPath, resolvedClaudePath, hydratedImages, queryOptions);
     } catch (error) {
       if (isSessionExpiredError(error) && conversationHistory && conversationHistory.length > 0) {
         this.sessionManager.invalidateSession();
@@ -356,7 +323,7 @@ export class ClaudianService {
         const retryImages = await hydrateImagesData(this.plugin.app, lastUserMessage?.images, vaultPath);
 
         try {
-          yield* this.queryViaSDK(fullPrompt, vaultPath, retryImages, queryOptions);
+          yield* this.queryViaSDK(fullPrompt, vaultPath, resolvedClaudePath, retryImages, queryOptions);
         } catch (retryError) {
           const msg = retryError instanceof Error ? retryError.message : 'Unknown error';
           yield { type: 'error', content: msg };
@@ -418,6 +385,7 @@ export class ClaudianService {
   private async *queryViaSDK(
     prompt: string,
     cwd: string,
+    cliPath: string,
     images?: ImageAttachment[],
     queryOptions?: QueryOptions
   ): AsyncGenerator<StreamChunk> {
@@ -433,7 +401,7 @@ export class ClaudianService {
     // Enhance PATH for GUI apps (Obsidian has minimal PATH)
     // User-specified PATH from settings takes priority
     // Pass CLI path so we can auto-detect Node.js if using .js file
-    const enhancedPath = getEnhancedPath(customEnv.PATH, this.resolvedClaudePath ?? undefined);
+    const enhancedPath = getEnhancedPath(customEnv.PATH, cliPath);
 
     // Build the prompt - either a string or content blocks with images
     const queryPrompt = this.buildPromptWithImages(prompt, images);
@@ -457,7 +425,7 @@ export class ClaudianService {
       systemPrompt,
       model: selectedModel,
       abortController: this.abortController ?? undefined,
-      pathToClaudeCodeExecutable: this.resolvedClaudePath!,
+      pathToClaudeCodeExecutable: cliPath,
       settingSources: ['user', 'project'],
       env: {
         ...process.env,
@@ -619,7 +587,6 @@ export class ClaudianService {
   cleanup() {
     this.cancel();
     this.resetSession();
-    this.resolvedClaudePath = null;
   }
 
   /** Sets the approval callback for UI prompts. */

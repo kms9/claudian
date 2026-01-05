@@ -502,6 +502,7 @@ export class ClaudianSettingTab extends PluginSettingTab {
           this.plugin.settings.claudeCliPath = value.trim();
           await this.plugin.saveSettings();
           // Clear cached path so next query will use the new path
+          this.plugin.cliResolver?.reset();
           this.plugin.agentService?.cleanup();
         });
       text.inputEl.addClass('claudian-settings-cli-path-input');

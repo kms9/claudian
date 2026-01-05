@@ -11,7 +11,7 @@ import { query as agentQuery } from '@anthropic-ai/claude-agent-sdk';
 import { TITLE_GENERATION_SYSTEM_PROMPT } from '../../../core/prompts/titleGeneration';
 import type ClaudianPlugin from '../../../main';
 import { getEnhancedPath, parseEnvironmentVariables } from '../../../utils/env';
-import { findClaudeCLIPath, getVaultPath } from '../../../utils/path';
+import { getVaultPath } from '../../../utils/path';
 
 /** Result of title generation (discriminated union). */
 export type TitleGenerationResult =
@@ -27,7 +27,6 @@ export type TitleGenerationCallback = (
 /** Service for generating conversation titles with AI. */
 export class TitleGenerationService {
   private plugin: ClaudianPlugin;
-  private resolvedClaudePath: string | null = null;
   /** Map of conversationId to AbortController for concurrent generation support. */
   private activeGenerations: Map<string, AbortController> = new Map();
 
@@ -59,11 +58,8 @@ export class TitleGenerationService {
       this.plugin.getActiveEnvironmentVariables()
     );
 
-    if (!this.resolvedClaudePath) {
-      this.resolvedClaudePath = findClaudeCLIPath(envVars.PATH);
-    }
-
-    if (!this.resolvedClaudePath) {
+    const resolvedClaudePath = this.plugin.getResolvedClaudeCliPath();
+    if (!resolvedClaudePath) {
       console.warn('[TitleGeneration] Claude CLI not found');
       await this.safeCallback(callback, conversationId, {
         success: false,
@@ -112,11 +108,11 @@ Generate a title for this conversation:`;
       systemPrompt: TITLE_GENERATION_SYSTEM_PROMPT,
       model: titleModel,
       abortController,
-      pathToClaudeCodeExecutable: this.resolvedClaudePath,
+      pathToClaudeCodeExecutable: resolvedClaudePath,
       env: {
         ...process.env,
         ...envVars,
-        PATH: getEnhancedPath(envVars.PATH, this.resolvedClaudePath ?? undefined),
+        PATH: getEnhancedPath(envVars.PATH, resolvedClaudePath),
       },
       allowedTools: [], // No tools needed for title generation
       permissionMode: 'bypassPermissions',

@@ -134,7 +134,7 @@ function isPathPlaceholder(value: string): boolean {
   return trimmed.toUpperCase() === '%PATH%';
 }
 
-function splitPathEntries(pathValue?: string): string[] {
+export function parsePathEntries(pathValue?: string): string[] {
   if (!pathValue) {
     return [];
   }
@@ -145,7 +145,7 @@ function splitPathEntries(pathValue?: string): string[] {
     .split(delimiter)
     .map(segment => stripSurroundingQuotes(segment.trim()))
     .filter(segment => segment.length > 0 && !isPathPlaceholder(segment))
-    .map(segment => expandHomePath(segment));
+    .map(segment => translateMsysPath(expandHomePath(segment)));
 }
 
 function dedupePaths(entries: string[]): string[] {
@@ -163,7 +163,7 @@ function findFirstExistingPath(entries: string[], candidates: string[]): string 
     if (!dir) continue;
     for (const candidate of candidates) {
       const fullPath = path.join(dir, candidate);
-      if (fs.existsSync(fullPath)) {
+      if (isExistingFile(fullPath)) {
         return fullPath;
       }
     }
@@ -171,9 +171,21 @@ function findFirstExistingPath(entries: string[], candidates: string[]): string 
   return null;
 }
 
+function isExistingFile(filePath: string): boolean {
+  try {
+    if (fs.existsSync(filePath)) {
+      const stat = fs.statSync(filePath);
+      return stat.isFile();
+    }
+  } catch {
+    // Ignore inaccessible paths
+  }
+  return false;
+}
+
 function resolveCliJsNearPathEntry(entry: string, isWindows: boolean): string | null {
   const directCandidate = path.join(entry, 'node_modules', '@anthropic-ai', 'claude-code', 'cli.js');
-  if (fs.existsSync(directCandidate)) {
+  if (isExistingFile(directCandidate)) {
     return directCandidate;
   }
 
@@ -183,7 +195,7 @@ function resolveCliJsNearPathEntry(entry: string, isWindows: boolean): string | 
     const candidate = isWindows
       ? path.join(prefix, 'node_modules', '@anthropic-ai', 'claude-code', 'cli.js')
       : path.join(prefix, 'lib', 'node_modules', '@anthropic-ai', 'claude-code', 'cli.js');
-    if (fs.existsSync(candidate)) {
+    if (isExistingFile(candidate)) {
       return candidate;
     }
   }
@@ -204,28 +216,27 @@ function resolveCliJsFromPathEntries(entries: string[], isWindows: boolean): str
 function resolveClaudeFromPathEntries(
   entries: string[],
   isWindows: boolean
-): { preferred: string | null; cmdFallback: string | null } {
+): string | null {
   if (entries.length === 0) {
-    return { preferred: null, cmdFallback: null };
+    return null;
   }
 
   if (!isWindows) {
     const unixCandidate = findFirstExistingPath(entries, ['claude']);
-    return { preferred: unixCandidate, cmdFallback: null };
+    return unixCandidate;
   }
 
   const exeCandidate = findFirstExistingPath(entries, ['claude.exe', 'claude']);
   if (exeCandidate) {
-    return { preferred: exeCandidate, cmdFallback: null };
+    return exeCandidate;
   }
 
   const cliJsCandidate = resolveCliJsFromPathEntries(entries, isWindows);
   if (cliJsCandidate) {
-    return { preferred: cliJsCandidate, cmdFallback: null };
+    return cliJsCandidate;
   }
 
-  const cmdCandidate = findFirstExistingPath(entries, ['claude.cmd', 'claude.bat', 'claude.ps1']);
-  return { preferred: null, cmdFallback: cmdCandidate };
+  return null;
 }
 
 /**
@@ -313,22 +324,17 @@ export function findClaudeCLIPath(pathValue?: string): string | null {
   const homeDir = os.homedir();
   const isWindows = process.platform === 'win32';
 
-  const customEntries = dedupePaths(splitPathEntries(pathValue));
-  let cmdFallback: string | null = null;
+  const customEntries = dedupePaths(parsePathEntries(pathValue));
 
   if (customEntries.length > 0) {
     const customResolution = resolveClaudeFromPathEntries(customEntries, isWindows);
-    if (customResolution.preferred) {
-      return customResolution.preferred;
-    }
-    if (isWindows && customResolution.cmdFallback) {
-      cmdFallback = customResolution.cmdFallback;
+    if (customResolution) {
+      return customResolution;
     }
   }
 
-  // On Windows, prefer native .exe, then cli.js, and only use .cmd as last resort.
-  // .cmd files cannot be spawned directly without shell: true, which breaks
-  // the SDK's stdio pipe communication for stream-json mode.
+  // On Windows, prefer native .exe, then cli.js. Avoid .cmd fallback
+  // because it requires shell: true and breaks SDK stdio streaming.
   if (isWindows) {
     const exePaths: string[] = [
       path.join(homeDir, '.claude', 'local', 'claude.exe'),
@@ -339,29 +345,18 @@ export function findClaudeCLIPath(pathValue?: string): string | null {
     ];
 
     for (const p of exePaths) {
-      if (fs.existsSync(p)) {
+      if (isExistingFile(p)) {
         return p;
       }
     }
 
     const cliJsPaths = getNpmCliJsPaths();
     for (const p of cliJsPaths) {
-      if (fs.existsSync(p)) {
+      if (isExistingFile(p)) {
         return p;
       }
     }
 
-    const cmdPaths: string[] = [
-      path.join(homeDir, 'AppData', 'Roaming', 'npm', 'claude.cmd'),
-    ];
-    for (const p of cmdPaths) {
-      if (fs.existsSync(p)) {
-        if (!cmdFallback) {
-          cmdFallback = p;
-        }
-        break;
-      }
-    }
   }
 
   // Platform-specific search paths for native binaries and npm symlinks
@@ -369,6 +364,9 @@ export function findClaudeCLIPath(pathValue?: string): string | null {
     // Native binary paths (preferred)
     path.join(homeDir, '.claude', 'local', 'claude'),
     path.join(homeDir, '.local', 'bin', 'claude'),
+    path.join(homeDir, '.volta', 'bin', 'claude'),
+    path.join(homeDir, '.asdf', 'shims', 'claude'),
+    path.join(homeDir, '.asdf', 'bin', 'claude'),
     '/usr/local/bin/claude',
     '/opt/homebrew/bin/claude',
     path.join(homeDir, 'bin', 'claude'),
@@ -383,7 +381,7 @@ export function findClaudeCLIPath(pathValue?: string): string | null {
   }
 
   for (const p of commonPaths) {
-    if (fs.existsSync(p)) {
+    if (isExistingFile(p)) {
       return p;
     }
   }
@@ -392,25 +390,18 @@ export function findClaudeCLIPath(pathValue?: string): string | null {
   if (!isWindows) {
     const cliJsPaths = getNpmCliJsPaths();
     for (const p of cliJsPaths) {
-      if (fs.existsSync(p)) {
+      if (isExistingFile(p)) {
         return p;
       }
     }
   }
 
-  const envEntries = dedupePaths(splitPathEntries(getEnvValue('PATH')));
+  const envEntries = dedupePaths(parsePathEntries(getEnvValue('PATH')));
   if (envEntries.length > 0) {
     const envResolution = resolveClaudeFromPathEntries(envEntries, isWindows);
-    if (envResolution.preferred) {
-      return envResolution.preferred;
+    if (envResolution) {
+      return envResolution;
     }
-    if (isWindows && envResolution.cmdFallback && !cmdFallback) {
-      cmdFallback = envResolution.cmdFallback;
-    }
-  }
-
-  if (isWindows && cmdFallback) {
-    return cmdFallback;
   }
 
   return null;
