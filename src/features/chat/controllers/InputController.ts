@@ -9,7 +9,7 @@ import type { Component } from 'obsidian';
 import { Notice } from 'obsidian';
 
 import type { ExitPlanModeDecision } from '../../../core/agent/ClaudianService';
-import type { SlashCommandManager } from '../../../core/commands';
+import { detectBuiltInCommand, type SlashCommandManager } from '../../../core/commands';
 import { isCommandBlocked } from '../../../core/security/BlocklistChecker';
 import { TOOL_BASH } from '../../../core/tools/toolNames';
 import type { AskUserQuestionInput, ChatMessage, ImageAttachment } from '../../../core/types';
@@ -118,6 +118,16 @@ export class InputController {
     let content = (contentOverride ?? inputEl.value).trim();
     const hasImages = imageContextManager?.hasImages() ?? false;
     if (!content && !hasImages) return;
+
+    // Check for built-in commands first (e.g., /clear, /new)
+    const builtInCmd = detectBuiltInCommand(content);
+    if (builtInCmd) {
+      if (shouldUseInput) {
+        inputEl.value = '';
+      }
+      await this.executeBuiltInCommand(builtInCmd.action);
+      return;
+    }
 
     // If agent is working, queue the message instead of dropping it
     if (state.isStreaming) {
@@ -1167,5 +1177,22 @@ ${content}
     state.addMessage(indicatorMsg);
     renderer.addMessage(indicatorMsg);
     renderer.scrollToBottom();
+  }
+
+  // ============================================
+  // Built-in Commands
+  // ============================================
+
+  /** Executes a built-in command action. */
+  private async executeBuiltInCommand(action: string): Promise<void> {
+    const { conversationController } = this.deps;
+
+    switch (action) {
+      case 'clear':
+        await conversationController.createNew();
+        break;
+      default:
+        console.warn(`[InputController] Unknown built-in command action: ${action}`);
+    }
   }
 }

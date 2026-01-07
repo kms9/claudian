@@ -5,6 +5,7 @@
  * Follows the FileContext.ts pattern for input detection and keyboard navigation.
  */
 
+import { getBuiltInCommandsForDropdown } from '../../core/commands';
 import type { SlashCommand } from '../../core/types';
 
 /** Callbacks for slash command dropdown interactions. */
@@ -151,8 +152,12 @@ export class SlashCommandDropdown {
   }
 
   private showDropdown(searchText: string): void {
-    const allCommands = this.callbacks.getCommands();
+    const userCommands = this.callbacks.getCommands();
+    const builtInCommands = getBuiltInCommandsForDropdown();
     const searchLower = searchText.toLowerCase();
+
+    // Merge built-in commands (first) with user commands
+    const allCommands = [...builtInCommands, ...userCommands];
 
     this.filteredCommands = allCommands
       .filter(cmd =>

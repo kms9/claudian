@@ -1061,8 +1061,8 @@ export class ClaudianService {
       }
     }
 
-    // Check for turn completion (result or terminal error message)
-    if (message.type === 'result' || message.type === 'error') {
+    // Check for turn completion (result includes error subtypes)
+    if (message.type === 'result') {
       // Signal turn complete to message channel
       this.messageChannel?.onTurnComplete();
 
