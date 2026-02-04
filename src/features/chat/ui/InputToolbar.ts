@@ -693,7 +693,11 @@ export class McpServerSelector {
     // Server list
     const listEl = this.dropdownEl.createDiv({ cls: 'claudian-mcp-selector-list' });
 
+<<<<<<< HEAD:src/features/chat/ui/InputToolbar.ts
     const allServers = this.mcpManager?.getServers() || [];
+=======
+    const allServers = this.mcpService?.getServers() || [];
+>>>>>>> 0e0c307 (feat: Hide disabled MCP servers from dropdown menu):src/ui/components/InputToolbar.ts
     const servers = allServers.filter(s => s.enabled);
 
     if (servers.length === 0) {
@@ -735,11 +739,18 @@ export class McpServerSelector {
       csEl.setAttribute('title', 'Context-saving: can also enable via @' + server.name);
     }
 
+<<<<<<< HEAD:src/features/chat/ui/InputToolbar.ts
     // Click to toggle (use mousedown for more reliable capture)
     itemEl.addEventListener('mousedown', (e) => {
       e.preventDefault();
       e.stopPropagation();
       this.toggleServer(server.name, itemEl);
+=======
+    // Click to toggle
+    itemEl.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this.toggleServer(server.name);
+>>>>>>> 0e0c307 (feat: Hide disabled MCP servers from dropdown menu):src/ui/components/InputToolbar.ts
     });
   }
 
